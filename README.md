@@ -1,0 +1,1 @@
+Analytical computations and outputs for the manuscript by Johnson et al. (in review) "Poorly studied reef species face elevated extinction risk".  All survey data used in this study are publicly available through https://portal.aodn.org.au/. 
