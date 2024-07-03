@@ -61,6 +61,7 @@ library(lubridate)
 library(lme4)
 library(lmerTest)
 library(zoo, include.only = "na.approx")
+library(ggforce, include.only = "facet_col")
 
 # "not in" function
 `%!in%` <- Negate(`%in%`)
@@ -166,7 +167,7 @@ algae_data %>%
   distinct() %>% 
   mutate(range_yrs = max(survey_year)-min(survey_year), 
          .by = species_name) %>% 
-  count(species_name, range_yrs) %>% view()
+  count(species_name, range_yrs)
 
 for (i in unique(algae_data$species_name)) {
   
@@ -266,7 +267,7 @@ fish_data %>%
   distinct() %>% 
   mutate(range_yrs = max(survey_year)-min(survey_year), 
          .by = species_name) %>% 
-  count(species_name, range_yrs) %>% view()
+  count(species_name, range_yrs) 
 
 
 for (i in unique(fish_data$species_name)) {
@@ -335,7 +336,7 @@ for (i in unique(fish_data$species_name)) {
 }
 ```
 
-## Invertebrates LMM
+## Mobile macro-invertebrates LMM
 ```{r}
 result_inverts <- tibble(
   species_name = character(),
@@ -357,7 +358,7 @@ inverts_data %>%
   distinct() %>% 
   mutate(range_yrs = max(survey_year)-min(survey_year), 
          .by = species_name) %>% 
-  count(species_name, range_yrs) %>% view()
+  count(species_name, range_yrs) 
 
 for (i in unique(inverts_data$species_name)) {
   
@@ -446,7 +447,7 @@ coral_data %>%
   distinct() %>% 
   mutate(range_yrs = max(survey_year)-min(survey_year), 
          .by = species_name) %>% 
-  count(species_name, range_yrs) %>% view()
+  count(species_name, range_yrs) 
 
 
 for (i in unique(coral_data$species_name)) {
@@ -565,6 +566,71 @@ result_inverts <- result_inverts %>%
   mutate(decade_change = (pc/13)*10)
 ```
 
+```{r - Chi Squared Test}
+#ALL 638 species
+
+# Create a matrix with your data
+data <- matrix(c(136, 124, 197, 181), nrow = 2)
+
+# Attach row and column names
+rownames(data) <- c("Threatened", "Non-Threatened")
+colnames(data) <- c("Endemic", "Non-Endemic")
+
+# Print the data
+print(data)
+
+# Perform the chi-squared test
+result <- chisq.test(data)
+
+# Print the result
+print(result)
+
+# Extract and print the p-value
+p_value <- result$p.value
+print(p_value)
+
+# Interpret the result
+if (p_value < 0.05) {
+  cat("There is a significant association between endemism status and threatened status.\n")
+} else {
+  cat("There is no significant association between endemism status and threatened status.\n")
+}
+
+
+##Significant declining species only 
+
+# Create a matrix with your data
+data <- matrix(c(47, 260, 31, 378), nrow = 2)
+
+# Attach row and column names
+rownames(data) <- c("Threatened", "Non-Threatened")
+colnames(data) <- c("Endemic", "Non-Endemic")
+
+# Print the data
+print(data)
+
+# Perform the chi-squared test
+result <- chisq.test(data, correct = FALSE)
+
+# Print the result
+print(result)
+
+# Extract and print the p-value
+p_value <- result$p.value
+print(p_value)
+
+# Interpret the result
+if (p_value < 0.05) {
+  cat("There is a significant association between endemism status and threatened status.\n")
+} else {
+  cat("There is no significant association between endemism status and threatened status.\n")
+}
+
+#1 in 10 endemics are threatened - almost twice as greater proportion of endemics were threatened compared to non-endemics (0.056)
+#27/297 and 20/408
+```
+
+
 #Plotting
 Read in csv of LMM results, rate of change from above and the species current 
 IUCN status.This spreadsheet has also filtered out all of the species that 
@@ -579,6 +645,10 @@ trending_species$biogeog <- factor(trending_species$biogeog, levels = c("cool (t
 
 #Endemic species plot
 trending_species %>% 
+  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
+                           taxon == "Invertebrate" ~ "b) Mobile macro-invertebrates",
+                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
+  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Mobile macro-invertebrates", "c) Fishes"))) %>%
   filter(p_value < 0.05, 
          slope < 0, 
          endemism == "endemic") %>% 
@@ -589,7 +659,7 @@ trending_species %>%
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = "red") +
   geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
   geom_errorbarh(aes(xmin = after_stat(x - stat(y)), xmax = after_stat(x + stat(y)), height = 0.2)) + 
-  geom_point(aes(shape = biogeog), size = 3) + #try a bigger sized point
+  geom_point(aes(shape = biogeog), size = 4.5) + #try a bigger sized point
   #geom_point(size = 3) + #####
   geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
     facet_wrap(~taxon, ncol = 1, scales = "free_y") +
@@ -609,6 +679,10 @@ trending_species %>%
 
 #Non-endemic species plot
 trending_species %>% 
+  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
+                           taxon == "Invertebrate" ~ "b) Mobile macro-invertebrates",
+                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
+  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Mobile macro-invertebrates", "c) Fishes"))) %>%
   filter(p_value < 0.05, 
          slope < 0, 
          endemism == "non-endemic") %>% 
@@ -619,10 +693,10 @@ trending_species %>%
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = "red") +
   geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
   geom_errorbarh(aes(xmin = after_stat(x - stat(y)), xmax = after_stat(x + stat(y)), height = 0.2)) + 
-  geom_point(aes(shape = biogeog), size = 3) +
+  geom_point(aes(shape = biogeog), size = 4.5) +
   geom_point(size = 3) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
-  facet_grid(taxon ~ ., scales = "free_y", space = "free") +
+   ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
   labs(
     x = "Rate of decline over a decade",
     y = "Species Name",
@@ -634,14 +708,14 @@ trending_species %>%
     axis.title.y = element_blank(),  
     axis.text.y = element_text(face = "italic"), 
     plot.title = element_text(hjust = 0.5),
-    strip.text = element_text(size = 11, hjust = 0.5, vjust = 1)
-  ) 
+    strip.text = element_text(size = 11, hjust = 0, vjust = 1)
+  )
 ```
 
 #IUCN Status versus trend plots
 ```{r}
 #Specify order of facet panels in plots
-desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
+#desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
 
 #ENDEMICS
 all_species_endemic <- trending_species %>%
@@ -657,7 +731,11 @@ all_species_endemic <- trending_species %>%
 all_species_endemic  %>%
   count(taxon, IUCN, new, species_name) %>%
   mutate(new = factor(new, levels = c("Endangered", "Vulnerable", "Near Threatened", "Least Concern", "Lower Risk/conservation dependent"))) %>%
-  mutate(taxon = factor(taxon, levels = desired_order)) %>%
+  mutate(taxon = case_when(taxon == "Vertebrate" ~ "d) Fishes",
+                           taxon == "Invertebrate" ~ "c) Mobile macro-invertebrates",
+                           taxon == "Macroalgae" ~ "a) Macroalgae",
+                           taxon == "Coral" ~ "b) Corals")) %>%
+  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Corals", "c) Mobile macro-invertebrates", "d) Fishes"))) %>%
   ggplot(aes(x = IUCN, y = n, fill = new)) +
   geom_col() +
   facet_wrap(~taxon, ncol = 1,scales = "free_y") + 
@@ -667,7 +745,8 @@ all_species_endemic  %>%
   scale_fill_manual(
         values = c("Critically Endangered" = "red", "Endangered" = "orange", "Vulnerable" = "yellow", "Near Threatened" = "#cccc33", "Least Concern" = "green3"),
     breaks = c("Critically Endangered", "Endangered", "Vulnerable", "Near Threatened", "Least Concern")) +
-  scale_x_discrete(limits = c("Not Evaluated", "Data Deficient", "Near Threatened", "Least Concern", "Vulnerable", "Endangered")) +
+  # scale_x_discrete(limits = c("Not Evaluated", "Data Deficient", "Near Threatened", "Least Concern", "Vulnerable", "Endangered")) +
+  scale_x_discrete(limits = c("Not Evaluated", "Data Deficient", "Least Concern","Near Threatened",  "Vulnerable", "Endangered")) +
   theme_minimal() +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
@@ -684,7 +763,7 @@ all_species_endemic  %>%
 
 #NON-ENDEMICS
 #Specify order of facet panels in plots
-desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
+#desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
 
 all_species_non_endemic <- trending_species %>%
   filter(endemism == "non-endemic") %>%
@@ -699,7 +778,11 @@ all_species_non_endemic <- trending_species %>%
 all_species_non_endemic %>%
   count(taxon, IUCN, new, species_name) %>%
   mutate(new = factor(new, levels = c("Endangered", "Vulnerable", "Near Threatened", "Least Concern"))) %>%
-  mutate(taxon = factor(taxon, levels = desired_order)) %>%
+  mutate(taxon = case_when(taxon == "Vertebrate" ~ "d) Fishes",
+                           taxon == "Invertebrate" ~ "c) Mobile macro-invertebrates",
+                           taxon == "Macroalgae" ~ "a) Macroalgae",
+                           taxon == "Coral" ~ "b) Corals")) %>%
+  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Corals", "c) Mobile macro-invertebrates", "d) Fishes"))) %>%
   ggplot(aes(x = IUCN, y = n, fill = new)) +
   geom_col() +
   facet_wrap(~taxon, ncol = 1,scales = "free_y") + 
@@ -709,7 +792,8 @@ all_species_non_endemic %>%
   scale_fill_manual(
     values = c("Critically Endangered" = "red", "Endangered" = "orange", "Vulnerable" = "yellow", "Near Threatened" = "#cccc33", "Least Concern" = "green3"),
     breaks = c("Critically Endangered", "Endangered", "Vulnerable", "Near Threatened", "Least Concern")) +
-  scale_x_discrete(limits = c("Not Evaluated", "Lower Risk/conservation dependent", "Data Deficient", "Least Concern", "Near Threatened", "Vulnerable", "Endangered")) +
+  # scale_x_discrete(limits = c("Not Evaluated", "Lower Risk/conservation dependent", "Data Deficient", "Least Concern", "Near Threatened", "Vulnerable", "Endangered")) +
+  scale_x_discrete(limits = c("Not Evaluated",  "Data Deficient", "Lower Risk/conservation dependent","Least Concern", "Near Threatened", "Vulnerable", "Endangered")) +
   theme_minimal() +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
