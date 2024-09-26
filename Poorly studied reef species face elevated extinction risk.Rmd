@@ -16,9 +16,9 @@ The following document provides the R code for the analysis for the paper: Johns
 [olivia.johsnon\@utas.edu.au](mailto:olivia.johsnon@utas.edu.au){.email}
 
 +------------------------+-------------------------------------------------------------------------------------------------------+
-| **R-version**          | 4.3.1 (2023-06-16 ucrt) -- "Beagle Scouts"                                                            |
+| **R-version**          | 4.4.1 (2024-06-14 ucrt) -- "Race for Your Life"                                                        |
 +------------------------+-------------------------------------------------------------------------------------------------------+
-| **platform**           | x86_64-w64-mingw32                                                                                    |
+| **platform**           | x86_64-w64-mingw32/x64                                                                                   |
 +------------------------+-------------------------------------------------------------------------------------------------------+
 | **Article DOI**        |                                                                                                       |
 +------------------------+-------------------------------------------------------------------------------------------------------+
@@ -60,6 +60,8 @@ library(janitor)
 library(lubridate)
 library(lme4)
 library(lmerTest)
+library(dplyr)
+library(data.table)
 library(zoo, include.only = "na.approx")
 library(ggforce, include.only = "facet_col")
 
@@ -68,19 +70,1259 @@ library(ggforce, include.only = "facet_col")
 ```
 
 #Cleaning script
-The code for cleaning the raw data is available in the R script "cleaning.R" - 
+The code for cleaning the raw data is available below  - 
 The raw data is in a wide format and is publicly available to download from 
-https://portal.aodn.org.au/ - you will need to download this raw data before
-proceeding with running the cleaning code. 
+https://portal.aodn.org.au/ - if you would like the latest version of data you 
+will need to download this raw data before proceeding with running the cleaning
+code. 
+
+```{r obs-data-import}
+
+# Raw in-situ (ATRC) Algae data
+algae_raw <- read_csv("ep_m3_2024.csv", 
+                      show_col_types = FALSE)
+
+# RLS/ATRC Method 1 (fish)
+# RLS/ATRC Method 1 (fish)
+fish_raw <- 
+  read_csv("ep_m1_aus_2024.csv", 
+           show_col_types = FALSE) %>% 
+  filter(method != 10) %>% #remove seagrass surveys and keep rocky reef records only
+  mutate(survey_date = as.Date(survey_date, format = "%d/%m/%Y")) %>%
+  mutate(blocks_per_transect = n_distinct(block), .by = survey_id, survey_date) %>% #summarise the total number of blocks for each transect
+  select(survey_id, species_name, blocks_per_transect, site_code, latitude, longitude, survey_date, method, phylum, class, order, family, total) #keep all columns needed going forward
+
+#Average counts at a transect level  
+fish <- fish_raw %>%
+group_by(survey_id, species_name, blocks_per_transect) %>%
+  summarise(totalabundance_pertransect = sum(total, na.rm = TRUE)) %>% #summarise all counts for a single species on a transect
+  mutate(abundance_per250 = (totalabundance_pertransect) / blocks_per_transect, 
+         abundance_per50 = abundance_per250/5) %>% #divide summarised species abundance by the number of blocks to get a value for that species on a single transect
+  ungroup()
+
+#Other information to add back in to averaged transect data
+fish_raw <- fish_raw %>%
+  distinct(survey_id, species_name, site_code, latitude, longitude, survey_date, method, phylum, class, order, family) #keep all columns needed going forward
+
+#join data frames back together
+fish <- fish %>%
+  left_join(fish_raw, by = c("species_name", "survey_id"))
+
+
+# RLS/ATRC Method 2 (cryptic fish only)
+cryptic_fish_raw <- 
+  read_csv("ep_m2_cryptic_fish_aus_2024.csv", 
+           show_col_types = FALSE) %>% 
+  mutate(survey_date = as.Date(survey_date, format = "%Y-%m-%d")) %>% #change survey date format
+  mutate(blocks_per_transect = n_distinct(block), .by = survey_id, survey_date) %>% #summarise the total number of blocks for each transect
+  select(survey_id, species_name, blocks_per_transect, site_code, latitude, longitude, survey_date, method, phylum, class, order, family, total)
+  
+
+#Average counts at a transect level  
+cryptic_fish <- cryptic_fish_raw %>%
+group_by(survey_id, species_name, blocks_per_transect) %>%
+  summarise(totalabundance_pertransect = sum(total, na.rm = TRUE)) %>% #summarise all counts for a single species on a transect
+  mutate(abundance_per50 = (totalabundance_pertransect) / blocks_per_transect) %>% #divide summarised species abundance by the number of blocks to get a value for that species on a single transect
+  ungroup()  
+  
+#Other information to add back in to averaged transect data
+cryptic_fish_raw <- cryptic_fish_raw %>%
+  distinct(survey_id, species_name, site_code, latitude, longitude, survey_date, method, phylum, class, order, family) #keep all columns needed going forward
+
+#join data frames back together
+cryptic_fish <- cryptic_fish %>%
+  left_join(cryptic_fish_raw, by = c("species_name", "survey_id"))
+
+
+# RLS/ATRC Method 2 (invertebrates only)
+inverts_raw <- read_csv("ep_m2_inverts_aus_2024.csv", 
+                        show_col_types = FALSE) %>%
+  mutate(survey_date = as.Date(survey_date, format = "%d/%m/%Y")) %>%
+  mutate(blocks_per_transect = n_distinct(block), .by = survey_id, survey_date) %>% #summarise the total number of blocks for each transect
+  mutate(totalabundance_pertransect = sum(total, na.rm = TRUE), .by = c(survey_id, species_name)) %>% #summarise all counts for a single species on a transect
+  mutate(abundance_per50 = (totalabundance_pertransect / blocks_per_transect)) #divide summarised species abundance by the number of blocks to get a value for that species on a single transect
+
+
+#Photoquadrat data - extracting coral data only
+coral_raw <- read_csv("PQ_FullRes_infilled_2024.csv", 
+                      show_col_types = FALSE)
+
+```
+
+# Data Cleaning
+
+## Algae
+
+Here, I will use the +30 years of ATRC data which has been entered as
+NRNM "M3" data and will filter this data to extract just the "algal"
+phylum only (i.e. remove substrate type and other sessile invertebrate
+species). This also requires amalgamating data for species that have had
+taxonomic name changes over time, and importantly, species that were not
+morphologically distinct enough to be consistently recognised by all
+in-situ data records were additionally removed from the analysis.
+
+Temperate algae data is scored in a point-count method via a quadrat
+with 50 points - I will convert this data so that it is on a percentage
+cover (multiply totals by 2, to convert to % cover) and take an average for a 
+species in a site*year combination, before transforming the data. 
+
+### Filtering species
+
+```{r algae-filtering}
+# Total number of species being considered in raw data (n = 801):
+num_species <- 
+  algae_raw %>%
+  distinct(species_name) %>%
+  nrow()
+
+# filter (and keep) out phylum containing algae only, taxonomic name changes, and species that were not morphologically distinctive enough to be consistently recognised by all in-situ data records (verified list by G. Edgar)
+
+algae_rmspp <- 
+  algae_raw %>% 
+  filter(phylum %in% c("algae", 
+                       "Heterokontophyta",
+                       "Rhodophyta",
+                       "Chlorophyta",
+                       "Tracheophyta",
+                       "Ochrophyta"
+  )) %>% 
+  filter(str_detect(species_name, "[A-Z]{1}[a-z]+\\s{1}[a-z]+$")) %>% 
+  filter(!str_detect(species_name, "Unidentified")) %>% 
+  filter(!str_detect(species_name, "\\[")) %>% 
+  filter(!str_detect(species_name, "sp\\.")) %>% 
+  filter(!str_detect(species_name, "spp\\.")) %>%
+  filter(species_name %!in% c("Ritterella pedunculata",
+                              "Herdmania grandis",
+                              "Anthothoe albocincta",
+                              "Ostrea angasi",
+                              "Phlyctenanthus australis",
+                              "Pyura australis",
+                              "Mytilus galloprovincialis",
+                              "Bare rock",
+                              "Turf/sand/sediment matrix",
+                              "Zonaria turneriana/angustata",
+                              "Cladophora prolifera",
+                              "Sargassum podacanthum",
+                              "Codium galeatum",
+                              "Bornetia binderiana",
+                              "Holotrichia comosa",
+                              "Sargassum distichum",
+                              "Dictyota naevosa",
+                              "Mesophyllum incisum",
+                              "Hymenena curdieana",
+                              "Acrosorium ciliolatum",
+                              "Platoma cyclocolpum",
+                              "Gracilaria secundata",
+                              "Dictyomenia sonderi",
+                              "Peltasta australis",
+                              "Homoeostrichus sinclairii",
+                              "Dictyota fastigiata",
+                              "Grateloupia filicina",
+                              "Phacelocarpus alatus",
+                              "Callophyllis lambertii",
+                              "Dictyota paniculata",
+                              "Acrotylus australis",
+                              "Jania pulchella",
+                              "Delisea hypneoides",
+                              "Gelinaria ulvoidea",
+                              "Carpopeltis phyllophora",
+                              "Cephalocystis furcellata",
+                              "Wrangelia nobilis",
+                              "Ptilota hannafordii",
+                              "Rhodymenia verrucosa",
+                              "Laurencia filiformis",
+                              "Scinaia tsinglanensis",
+                              "Rhodymenia leptophylla",
+                              "Distromium multifidum",
+                              "Codium fragile",
+                              "Pterocladiella capillacea",
+                              "Protokuetzingia australasica",
+                              "Hypnea pannosa", 
+                              "Grateloupia turuturu", 
+                              "Taonia australasica", 
+                              "Rhodophyllis multipartita", 
+                              "Phymatolithon masonianum", 
+                              "Coelarthrum opuntia", 
+                              "Delisea elegans",
+                              "Hymenena affinis", 
+                              "Griffithsia monilis", 
+                              "Rhodymenia obtusa", 
+                              "Halymenia plana",
+                              "Tsengia feredayae", 
+                              "Champia stipitata", 
+                              "Ptilonia australasica",
+                              "Jania sagittata",
+                              "Kallymenia tasmanica",
+                              "Pseudobryopsis hainanensis", 
+                              "Mychodea carnosa", 
+                              "Craspedocarpus venosus", 
+                              "Craspedocarpus tenuifolius", 
+                              "Rhodymenia wilsonis",
+                              "Nizymenia australis", 
+                              "Codium duthieae", 
+                              "Nizymenia furcata", 
+                              "Dictyota gunniana", 
+                              "Plocamium costatum", 
+                              "Chondria incrassata", 
+                              "Gracilaria preissiana", 
+                              "Exallosorus olsenii",
+                              "Curdiea angustata",
+                              "Chlanidophora microphylla", 
+                              "Amansia rhodantha", 
+                              "Gelidium asperum", 
+                              "Cladostephus spongiosus",
+                              "Rhodopeltis australis", 
+                              "Phacelocarpus sessilis",
+                              "Rhodopeltis borealis",
+                              "Laurencia majuscula",
+                              "Sargassum paradoxum",
+                              "Sporochnus radiciformis",
+                              "Coelarthrum cliftonii", 
+                              "Jania rosea",
+                              "Erythroclonium sonderi", 
+                              "Nizymenia conferta", 
+                              "Gelidium australe", 
+                              "Tylotus obtusatus", 
+                              "Codium harveyi", 
+                              "Sonderophycus coriaceus",
+                              "Myriodesma integrifolium", 
+                              "Acrosorium minus", 
+                              "Champia zostericola",
+                              "Callophycus serratus",
+                              "Acanthophora dendroides",
+                              "Rhodymenia prolificans", 
+                              "Hymenocladia usnea", 
+                              "Zonaria diesingiana", 
+                              "Halopeltis australis", 
+                              "Stypopodium flabelliforme", 
+                              "Polysiphonia blandii",
+                              "Zonaria turneriana", 
+                              "Dictyota nigricans", 
+                              "Jania micrarthrodia",
+                              "Plocamium cirrhosum", 
+                              "Rhodymenia sonderi", 
+                              "Mychodea aciculare", 
+                              "Phacelocarpus apodus", 
+                              "Peyssonnelia novaehollandiae",
+                              "Laurencia clavata", 
+                              "Myriogramme gunniana",
+                              "Melanthalia abscissa", 
+                              "Polyopes constrictus",
+                              "Distromium flabellatum",
+                              "Carpopeltis elata",
+                              "Callophycus laxus",
+                              "Euptilocladia spongiosa",
+                              "Sargassum spinuligerum", 
+                              "Cladosiphon filum", 
+                              "Dasya extensa", 
+                              "Corallina officinalis", 
+                              "Encyothalia cliftonii", 
+                              "Dicranema revolutum", 
+                              "Dictyopteris plagiogramma", 
+                              "Nitospinosa tasmanica", 
+                              "Echinothamnion mallardiae",
+                              "Sargassum oligocystum", 
+                              "Sargassum lacerifolium", 
+                              "Erythroclonium muelleri", 
+                              "Amphiroa gracilis", 
+                              "Myriodesma tuberosum", 
+                              "Sargassum linearifolium", 
+                              "Heterosiphonia muelleri", 
+                              "Sargassum ligulatum",
+                              "Zostera nigricaulis",
+                              "Chaetomorpha billardierii")) %>% 
+  mutate(survey_year = year(survey_date)) %>% 
+  # ensure species that have had a taxonomic name change over time have the data points merged together (these species highlighted by GE)
+  mutate(species_name = case_when(
+    species_name == "Caulerpa annulata" ~ "Caulerpa hodgkinsoniae",
+    species_name == "Sargassum decipiens" ~ "Phyllotricha varians",
+    species_name == "Sargassum varians" ~ "Phyllotricha decipiens",
+    species_name == "Sargassum verruculosum" ~ "Phyllotricha verruculosa", 
+    species_name == "Sargassum heteromorphum" ~ "Sargassopsis heteromorphum", 
+    TRUE ~ species_name
+  )) %>% 
+  select(
+    survey_id,
+    site_code,
+    location,
+    area,
+    ecoregion,
+    survey_year,
+    phylum,
+    species_name,
+    quadrat,
+    habitat_groups,
+    total,
+    taxon,
+    latitude,
+    longitude) %>% 
+  as_tibble()  
+
+#Algae latitude and longitude dataframe
+algae_lat_lons <-
+  algae_raw %>% 
+  drop_na(latitude, longitude) %>% 
+  summarise(latitude = mean(latitude), 
+            longitude = mean(longitude), 
+            .by = site_code)
+
+```
+
+### Cleaning counts
 
 ```{r}
-#source("cleaning.R")
+#Filters the algae_rmspp dataframe to keep only those rows where the total value is less than or equal to 50 for percentage cover conversions. This helps in removing any single observations greater than 50
+
+# algae_clean <- 
+algae_bysurv <- 
+  algae_rmspp %>% 
+  filter(total <= 50) %>% # keep single observations less than or equal to 50 
+  mutate(percentcover_per_quadrat = total*2) %>% #convert from point count to percentage cover 
+  summarise(cover_per_surveyid = mean(percentcover_per_quadrat), #Summarise mean quadrat cover for each survey
+            .by = c(species_name, 
+                    survey_id,
+                    site_code,
+                    location,
+                    ecoregion,
+                    survey_year,
+                    total,
+                    percentcover_per_quadrat)) 
+
+#Determine the number of unique transects (survey_id) conducted at a site in a given year
+nsurveys_bysiteyear <- 
+algae_bysurv %>% 
+  select(survey_id, site_code, survey_year) %>% 
+  distinct() %>% 
+  count(site_code, survey_year, name = "nsurveys_bysiteyr")
+
+#For every transect (survey_id) divide the percent cover for a species by 5 quadrats to determine average % cover for that species at a site in a given year. Summarise the total percentage cover for a species at a site in a given year divided by the total number of surveys (survey_id) to get the final av % cover for that species at a site. 
+algae_bysurv <- algae_bysurv %>% 
+  summarise(SUM_cover_persurveyid = sum(cover_per_surveyid), 
+            .by = c(site_code, survey_year, species_name)) %>% 
+  mutate(av_percentcover_site = SUM_cover_persurveyid/5) %>% #this is a sum of above for the total % cover of a species, divided by the 5 quadrats in a survey level
+  left_join(nsurveys_bysiteyear) %>% 
+  mutate(cover_bysiteyr = av_percentcover_site/nsurveys_bysiteyr)
+
+```
+
+### Dealing with NAs
+
+We want NA values to be changed to zeros when all of the following
+conditions are met:
+
+1.  The site was surveyed that year.
+2.  The species was observed at least once at that site in any other year.
+3.  The species was recorded at that site at that year.
+
+To do this we need to make a list of all the site\*year combinations,
+all site\*species combinations, and all site\*year\*taxon combinations
+**that have at least one observation**. If the row in question has a
+site\*year combination that is found in the overall site\*year
+combination list, then we know that site was surveyed in that year and
+therefore meets the first condition. We repeat for the first three
+conditions, if all three are met and the count is NA, we replace with a
+zero value.
+
+```{r algae-naconvert}
+# site*year combinations
+#Filter out rows where cover is "NA" or "0", select distinct combinations of 'site_code' and 'survey_year'
+#Create a new column 'site_code_yr' which concatenates 'site_code' and 'survey_year'
+algae_spp_sites <- 
+  algae_bysurv %>% 
+  select(species_name, site_code) %>%
+  distinct() %>% 
+  arrange(site_code, species_name)
+
+# site*year*species combinations
+#Similar to previous step, but combining 'site_code' and 'species_name' to create the new column 'site_code_spp'
+algae_yrs_sites <- 
+  algae_bysurv %>% 
+  select(survey_year, site_code) %>%
+  distinct() %>% 
+  arrange(site_code, survey_year)
+
+#This step nests the 'species_name' column by 'site_code'
+algae_spp_sites_nested <- 
+  algae_spp_sites %>% 
+  nest(spp = species_name)
+
+
+#Join 'algae_site_byyear' with 'algae_site_byspp_nested' by 'site_code'
+#Unnest the data, join algae clean to bring in 'cover_bysiteyr' data
+#join with 'algae_lats_lons" to bring in latitude and longitude data
+#Replace 'NA' values in cover_bysiteyr with '0' and compute the square root transformation to 'cover_bysiteyr'
+
+algae_data_addingzeros <-
+  algae_yrs_sites %>%
+  left_join(algae_spp_sites_nested) %>%
+  unnest(cols = spp) %>%
+  left_join(algae_bysurv %>%
+              select(species_name,
+                     site_code,
+                     survey_year,
+                     cover_bysiteyr)) %>%
+  left_join(algae_lat_lons, by = join_by(site_code)) %>%
+  mutate(cover_bysiteyr = replace_na(cover_bysiteyr, 0)) %>%
+  mutate(sqrt_cover = sqrt(cover_bysiteyr)) 
+
+  
+#Transforming by log (as a check)
+#Accounting for a log transformation with zeros
+################ MinN attempt ##############
+# Calculate the minimum density per species per site
+min_density <- 
+  algae_data_addingzeros %>%
+  filter(cover_bysiteyr > 0) %>%
+  summarise(minN = min(cover_bysiteyr), 
+            .by = c(site_code, species_name)) 
+
+# Join the min_density table to the main species count table
+algae_data_with_minN <- 
+  algae_data_addingzeros %>%
+  left_join(min_density, by = c("site_code", "species_name")) %>% 
+  mutate(site_yr = paste(site_code, survey_year, sep = "_"))
+
+# #export a data sheet here for mapping sites later on
+# file_name <- "algae_mappingsites_2024.csv"
+# write.csv(algae_data_with_minN, file_name, row.names = FALSE)
+
+# this will be used as the main dataframe
+algae_data <- 
+  algae_data_with_minN |> 
+  mutate(latitude  = round(latitude),
+         longitude = round(longitude)) |> 
+  mutate(grid_cell = paste(latitude, longitude)) %>% 
+  mutate(transect_id = paste(site_code, survey_year, sep = "_")) %>% 
+  mutate(n_sites_byspp = n(), 
+         .by = c(site_code, species_name)) %>% 
+  mutate(n_obs_byspp = n(), .by = c(species_name)) %>% 
+  mutate(log_cover = log10(cover_bysiteyr + minN/2)) %>%  # Use minN for log transformation
+  filter(n_sites_byspp >= 5) %>% # n_sites_byspp = number of years in site*spp combination  
+  filter(n_distinct(site_code) >= 20, # number of unique sites per spp
+         .by = species_name) 
+
+```
+
+## Fish
+
+Here, I will load in all fish data, this includes M1 data and all
+"cryptic fish" scored in M2 that has been separated into their own data
+set from the NRMN (both ATRC and RLS).
+
+As M1 fish and M2 fish are scored on a different scale/different search
+efforts, I will ensure all counts for fish are (reduced for M1) measured
+on a 50m2 scale. Additionally, ANY and ALL fish sighted on M1 surveys
+are recorded, so to ensure cryptic fish counts made on a M1 survey are
+counted towards the trend of the species, M1 and cryptic fish datasets
+will be combined, scaled to 50m2 (also to take into account the two
+blocks per survey), filtered from 2008 on wards, in a site\*year
+combination (due to the case there may be multiple surveys at one site
+during a year). To prevent inflation of certain species, the fish data
+will be logged before any modelling occurs.
+
+```{r}
+#combine raw fish (M1) and cryptic fish (M2) datasets
+fish_combined <-
+  fish %>%
+  bind_rows(cryptic_fish) %>%
+  mutate(site_yr = paste(site_code, year(survey_date), sep = "_"),
+         survey_year = year(survey_date)) %>%
+  mutate(transects_persiteyr = n_distinct(survey_id), .by = c(site_code, survey_year))
+
+#To ensure a species isn't having a double count when combining M1 and M2 data, take the highest average density for that species at a transect level
+fish_combined <- fish_combined %>%
+  group_by(survey_id, species_name) %>%
+  filter(abundance_per50 == max(abundance_per50)) %>%
+  ungroup()
+
+# remove incorrectly named species
+fish_filtered <- 
+  fish_combined %>%
+  filter(phylum %in% c("Chordata")) %>% 
+  filter(class %in% c("Actinopterygii",
+                      "Elasmobranchii",
+                      "Teleostei",
+                      "Actinopteri")) %>%
+  filter(str_detect(species_name, "[A-Z]{1}[a-z]+\\s{1}[a-z]+$")) %>% 
+  filter(!str_detect(species_name, "Unidentified")) %>% 
+  filter(!str_detect(species_name, "\\[|\\]")) %>%
+  filter(!str_detect(species_name, "\\[")) %>% 
+  filter(!str_detect(species_name, "sp\\.")) %>% 
+  filter(!str_detect(species_name, "spp\\.")) %>% 
+  mutate(species_name = case_when(species_name == "Apogon doederleini" ~ "Ostorhinchus doederleini", TRUE ~ species_name)) %>%
+  mutate(species_name = case_when(species_name == "Apogon victoriae" ~ "Ostorhinchus victoriae", TRUE ~ species_name)) %>%
+  mutate(species_name = case_when(species_name == "Apogon limenus" ~ "Ostorhinchus limenus", TRUE ~ species_name)) %>%
+  mutate(species_name = case_when(species_name == "Stegastes fasciolatus" ~ "Plectroglyphidodon fasciolatus", TRUE ~ species_name)) %>%
+  mutate(species_name = case_when(species_name == "Cetoscarus bicolor" ~ "Cetoscarus ocellatus", TRUE ~ species_name))
+```
+
+### Cleaning counts
+
+```{r}
+#Create a dataframe that contains information that might be needed later
+sitesurvey_info_fish <- fish_filtered %>%
+  select(survey_year, site_code, site_yr, blocks_per_transect, transects_persiteyr)
+
+sitesurvey_info_fish <- sitesurvey_info_fish %>%
+  select(site_code, survey_year, transects_persiteyr) %>%
+  distinct()
+
+#create a dataframe "survey_list" which contains the other data which may be
+# some lat, lon are very slightly different (e.g. survey_id == 923400036)
+fish_survey_list <-
+  fish_filtered %>%
+  select(site_yr,
+         site_code,
+         survey_id,
+         survey_year,
+         latitude,
+         longitude) %>%
+  distinct() %>%
+  summarise(latitude = mean(latitude),
+            longitude = mean(longitude),
+            .by = c(site_yr,
+                    site_code,
+                    survey_id,
+                    survey_year))
+
+```
+
+### Dealing with NAs
+
+We want NA values to be changed to zeros when all of the following
+conditions are met:
+
+1.  The site was surveyed that year.
+2.  The species was observed at least once at that site in any other year.
+3.  The species was recorded at that site at that year.
+
+To do this we need to make a list of all the site\*year combinations,
+all site\*species combinations, and all site\*year\*taxon combinations
+**that have at least one observation**. If the row in question has a
+site\*year combination that is found in the overall site\*year
+combination list, then we know that site was surveyed in that year and
+therefore meets the first condition. We repeat for the first three
+conditions, if all three are met and the count is NA, we replace with a
+zero value.
+```{r fish-nacovnert}
+
+# all species*site combinations
+fish_spp_sites <- 
+  fish_filtered %>% 
+  select(species_name, site_code) %>%
+  distinct() %>% 
+  arrange(site_code, species_name)
+
+# all site*year combinations
+fish_yrs_sites <- 
+  fish_filtered %>% 
+  select(survey_year, site_code) %>%
+  distinct() %>% 
+  arrange(site_code, survey_year)
+
+# All of the species seen at that site
+# nested so that we have a single row per site to join to the yrs_sites dataframe
+fish_spp_sites_nested <- 
+  fish_spp_sites %>% 
+  nest(spp = species_name)
+
+# all all possible species at a site expanded by the surveyed years
+# NAs converted to zero
+fish_data_addingzeros <- 
+  fish_yrs_sites %>% 
+  left_join(fish_spp_sites_nested, by = "site_code") %>% 
+  unnest(cols = spp, names_sep = "_nested") %>% 
+  rename(species_name = spp_nestedspecies_name) %>%
+  mutate(abundance_per50 = NA) %>%
+  mutate(abundance_per50 = ifelse(is.na(abundance_per50), 0, abundance_per50)) %>%
+  mutate(abundance_per50 = as.numeric(abundance_per50)) 
+
+
+#select columns needed
+fish_filtered <- fish_filtered %>%
+  select(survey_year, site_code, species_name, abundance_per50)
+
+#now left join with fish_filtered dataframe 
+fish_data_addingzeros <- fish_data_addingzeros %>%
+  rbind(fish_filtered, fish_data_addingzeros)
+
+#Data check for any remaining NA values per 50m2
+fish_data_addingzeros |> filter(is.na(abundance_per50)) |> nrow()
+fish_data_addingzeros |> filter(abundance_per50==0) |> nrow()
+
+
+#Averaging abundance_per50 for a site*year combination
+#For a single species at a site, summarise all of their abundance_per50 records
+fish_data_addingzeros <- fish_data_addingzeros %>%
+  group_by(species_name, site_code, survey_year) %>%
+  summarise(summed_abundanceper50_persiteyr = sum(abundance_per50, na.rm = TRUE), .groups = 'drop')
+
+#add in sitesummary_info that is now needed
+fish_data_addingzeros <- fish_data_addingzeros %>%
+  left_join(sitesurvey_info_fish %>% select(survey_year, site_code, transects_persiteyr), 
+            by = c("survey_year", "site_code"))
+
+#Determine average for a species for a site in a given year
+avspp_persiteyr <- fish_data_addingzeros %>%
+  mutate(avspp_persiteyr = summed_abundanceper50_persiteyr/ transects_persiteyr)  #Mean species per site per year - divide mean species per transect
+
+#Accounting for a log transformation with zeros
+################ MinN attempt ##############
+# Calculate the minimum density per species per site
+min_density <- 
+  avspp_persiteyr %>%
+  filter(avspp_persiteyr > 0) %>%
+  summarise(minN = min(avspp_persiteyr), 
+            .by = c(site_code, species_name)) 
+
+# Join the min_density table to the main species count table
+fish_data_with_minN <- 
+  avspp_persiteyr %>%
+  left_join(min_density, by = c("site_code", "species_name")) %>% 
+  mutate(site_yr = paste(site_code, survey_year, sep = "_"))
+
+# export a data sheet here for mapping sites later on
+ # file_name <- "fish_mappingsites_2024.csv"
+ # write.csv(fish_data, file_name, row.names = FALSE)
+
+#Final data frame for modelling 
+fish_data <- 
+  fish_data_with_minN %>% 
+  left_join(fish_survey_list %>% 
+              summarise(latitude = mean(latitude), 
+                        longitude = mean(longitude), 
+                        .by = site_yr), 
+            by = join_by(site_yr)) %>% 
+  mutate(grid_cell = paste(latitude, longitude)) %>% #create a grid cell column
+  mutate(latitude = round(latitude),
+         longitude = round(longitude), 
+         log_count = log10(avspp_persiteyr + minN/2)) %>%  # Use minN for log transformation
+  mutate(year = substr(site_yr, nchar(site_yr) - 3, nchar(site_yr)) %>% 
+           as.numeric(),
+         site_code = substr(site_yr, 1, nchar(site_yr) - 5)) %>% 
+  add_count(site_code, species_name, name = "n_site_species") %>% 
+  filter(n_site_species >= 5) %>% # n_sites_byspp = number of years in site*spp combination - minimum of 3, GE has suggested 10
+  filter(n_distinct(site_code) >= 20, # number of unique sites per spp
+         .by = species_name)
+
+```
+
+## Invertebrates
+
+Here, I will load in all method 2 (M2) invertebrate data from the NRMN, comprised
+of ATRC and RLS data. Invertebrates are surveyed on a 50m2 scale. As a check to 
+make sure there are no cryptic fish in this dataset as they are scored in M2, 
+filter to ensure there are no observations with the phylum "Chordata" in the 
+dataset, and the data is representative of observations to the species level.                                                      
+To prevent inflation of certain species, the invertebrate data will be logged
+before any modelling occurs.
+
+```{r}
+sum(is.na(inverts_raw$total))
+
+# Total number of M2 inverts being considered: 1400
+# invert_num_species <- 
+#   inverts_raw %>%
+#   distinct(species_name) %>%
+#   nrow()
+# print(invert_num_species)
+
+#first let's check what "Phylum" groups are contained in the "invertebrate raw" dataframe
+inverts_raw %>% 
+  filter(phylum == "Chordata") %>% 
+  nrow()
+# data should have ZERO Chordates - 2275 observations found, filter out below
+
+#filter (and keep) inverts columns
+inverts_clean <- 
+  inverts_raw %>% 
+  filter(str_detect(species_name, "[A-Z]{1}[a-z]+\\s{1}[a-z]+$")) %>% 
+  filter(!str_detect(species_name, "Unidentified")) %>% 
+  mutate(survey_year = year(survey_date)) %>% 
+  mutate(transects_persiteyr = n_distinct(survey_id), .by = c(site_code, survey_year)) %>%
+  filter(!str_detect(species_name, "\\[|\\]")) %>%
+  filter(!str_detect(species_name, "\\[")) %>% 
+  filter(!str_detect(species_name, "sp\\.")) %>% 
+  filter(!str_detect(species_name, "spp\\.")) %>%
+  filter(phylum %!in% c("Chordata")) %>%
+  filter(species_name %!in% c("Asthenosoma varium",
+                              "Equichlamys bifrons",
+                              "Oxycomanthus bennetti",
+                              "Cronia avellana",
+                              "Neothyonidium magnum",
+                              "Mimachlamys asperrima",
+                              "Cenolia glebosus",
+                              "Tropiometra afra",
+                              "Pecten fumatus",
+                              "Tripneustes australiae", 
+                              "Tripneustes gratilla")) %>% #remove the Tripneustes genus - name changes/inconsistent records for study
+  dplyr::select(
+    survey_id,
+    site_code,
+    location,
+    area,
+    ecoregion,
+    survey_year,
+    phylum,
+    class,
+    species_name,
+    size_class,
+    taxon,
+    latitude,
+    longitude,
+    blocks_per_transect,
+    transects_persiteyr,
+    abundance_per50) %>% 
+  as_tibble() 
+
+#After inspecting the dataset there are multiple species with NA values for class. Fill in the gaps where possible:
+
+inverts_clean <- inverts_clean %>%
+  mutate(class = ifelse(species_name == "Pseudoceros indicus" & is.na(class), "Rhabditophora", class))
+
+inverts_clean <- inverts_clean %>%
+  mutate(class = ifelse(species_name == "Pseudoceros scintillatus" & is.na(class), "Rhabditophora", class))
+
+####
+
+#Seastar species with two spelling versions of species name - amend to current WoRMS listing:
+inverts_clean$species_name[inverts_clean$species_name == "Pentagonaster dubeni"] <- "Pentagonaster duebeni" 
+
+#Update to P. chabrus name according to WoRMS
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = ifelse(species_name == "Plagusia chabrus", "Guinusia chabrus", species_name))
+
+inverts_clean <- inverts_clean %>%
+  mutate(taxon = ifelse(taxon == "Plagusia chabrus", "Guinusia chabrus", taxon))
+
+#Comanthus to Cenolia
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = ifelse(species_name == "Comanthus tasmaniae", "Cenolia tasmaniae", species_name))
+
+inverts_clean <- inverts_clean %>%
+  mutate(taxon = ifelse(taxon == "Comanthus tasmaniae", "Cenolia tasmaniae", taxon))
+
+#Pterynotus to Pterochelus at genus level
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = ifelse(species_name == "Pterynotus triformis", "Pterochelus triformis", species_name))
+
+inverts_clean <- inverts_clean %>%
+  mutate(taxon = ifelse(taxon == "Pterynotus triformis", "Pterochelus triformis", taxon))
+
+#Update to Calcinus minutus
+inverts_clean <- inverts_clean %>%
+  mutate(taxon = ifelse(taxon == "Clibanarius seurati", "Calcinus minutus", taxon))
+
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = ifelse(species_name == "Clibanarius seurati", "Calcinus minutus", species_name))
+
+#Update to Mariaglaja inornata
+inverts_clean <- inverts_clean %>%
+  mutate(taxon = ifelse(taxon == "Chelidonura inornata", "Mariaglaja inornata", taxon))
+
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = ifelse(species_name == "Chelidonura inornata", "Mariaglaja inornata", species_name))
+
+#Update to Goniobranchus thompsoni
+inverts_clean <- inverts_clean %>%
+  mutate(taxon = ifelse(taxon == "Chromodoris thompsoni", "Goniobranchus thompsoni", taxon))
+
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = ifelse(species_name == "Chromodoris thompsoni", "Goniobranchus thompsoni", species_name))
+
+
+# #Inconsistent records of Goniocidaris tubaria and "Goniocidaris impressa"
+
+#There are sites where Goniocidaris impressa and Goniocidaris tubaria will not have been ID correctly
+#As per G. Edgar's recommendations, if any G. impressa is recorded at a site then call all records of "Goniocidaris" at that site, G impressa or vice versa depending on the species.
+#This may need to be done on a "location" basis, as the records should be changed for the area not just the "site" level. i.e. not all Ninepin point sites have the same site_code labeling.
+
+#See the number records, locations and sites where both species of Goniocidaris is recorded
+locations_with_both_species <- inverts_clean %>%
+  filter(species_name %in% c("Goniocidaris impressa", "Goniocidaris tubaria")) %>%
+  group_by(location) %>%
+  filter(n_distinct(species_name) == 2) %>%
+  count(location, species_name) %>%
+  ungroup() %>%
+  add_count(location, name = "total_records")
+
+#There are 40 sites where both species are recorded and 13 locations - make the changes at a location level rather than site
+
+#Where Goniocidaris impressa and Goniocidaris impressa have both been recorded at the one site/location change any records for consistency/mis-identification. Data changes have been recommended and confirmed with G. Edgar before being made below: 
+
+#Port Phillip Heads - change G.tubaria records to G.impressa 
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Port Phillip Heads" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "Port Phillip Heads" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Encounter - change G.impressa records to G.tubaria 
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Encounter" & species_name == "Goniocidaris impressa",
+                           "Goniocidaris tubaria", species_name),
+         taxon = if_else(location == "Encounter" & taxon == "Goniocidaris impressa",
+                    "Goniocidaris tubaria", taxon))
+
+#D'Entrecasteaux & Derwent - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "D'Entrecasteaux & Derwent" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "D'Entrecasteaux & Derwent" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Tinderbox - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Tinderbox" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "Tinderbox" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Ninepin Point - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Ninepin Point" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "Ninepin Point" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Tasmania - South East - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Tasmania - South East" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "Tasmania - South East" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Bicheno - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Bicheno" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "Bicheno" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Tasmania - North East - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Tasmania - North East" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "Tasmania - North East" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Port Davey - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Port Davey" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "Port Davey" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Maria Island - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Maria Island" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "Maria Island" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Tasmania - North - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Tasmania - North" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+         taxon = if_else(location == "Tasmania - North" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#King Island - change G.tubaria records to G.impressa
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "King Island" & species_name == "Goniocidaris tubaria",
+                           "Goniocidaris impressa", species_name),
+    taxon = if_else(location == "King Island" & taxon == "Goniocidaris tubaria",
+                    "Goniocidaris impressa", taxon))
+
+#Jervis Bay - change G.impressa records to G.tubaria
+inverts_clean <- inverts_clean %>%
+  mutate(species_name = if_else(location == "Jervis Bay" & species_name == "Goniocidaris impressa",
+                           "Goniocidaris tubaria", species_name),
+    taxon = if_else(location == "Jervis Bay" & taxon == "Goniocidaris impressa",
+                    "Goniocidaris tubaria", taxon))
+
+#Re-run to check and ensure there are no sites with two names for Goniocidaris - above works, results is zero
+#See the number of locations where both species of Goniocidaris is recorded
+# locations_with_both_species <- inverts_clean %>%
+#   filter(species_name %in% c("Goniocidaris impressa", "Goniocidaris tubaria")) %>%
+#   group_by(location) %>%
+#   filter(n_distinct(species_name) == 2) %>%
+#   distinct(location)
+
+
+# #Total number of M2 species being considered after filtering: 1066
+# inverts_num_species_2 <- 
+#   inverts_clean %>%
+#   distinct(species_name) %>%
+#   nrow()
+# print(inverts_num_species_2)
+
+# #view list of M2 species
+# inverts_species_list <- 
+#   inverts_clean %>% 
+#   distinct(species_name) %>% 
+#   pull(species_name)
+
+#Inverts additional information for later
+inverts_survey_list <- 
+  inverts_clean %>% 
+  select(site_code,
+         survey_id,
+         location,
+         ecoregion,
+         survey_year,
+         phylum,
+         species_name,
+         taxon,
+         latitude,
+         longitude) %>% 
+  distinct() %>%
+  mutate(site_yr = paste(site_code, survey_year, sep = "_")) %>%
+  summarise(latitude = mean(latitude),
+            longitude = mean(longitude),
+            .by = c(site_yr, 
+                    site_code, 
+                    survey_id,
+                    survey_year))
+
+
+#Create a dataframe that contains information that might be needed later
+sitesurvey_info_inverts <- inverts_clean %>%
+  mutate(site_yr = paste(site_code, survey_year, sep = "_")) %>%
+  select(survey_year, site_code, site_yr, blocks_per_transect, transects_persiteyr)
+
+sitesurvey_info_inverts <- sitesurvey_info_inverts %>%
+  select(site_code, survey_year, transects_persiteyr) %>%
+  distinct()
+
+```
+
+### Dealing with NAs
+
+We want NA values to be changed to zeros when all of the following
+conditions are met:
+
+1.  The site was surveyed that year.
+2.  The species was observed at least once at that site in any other year.
+3.  The species was recorded at that site at that year.
+
+To do this we need to make a list of all the site\*year combinations,
+all site\*species combinations, and all site\*year\*taxon combinations
+**that have at least one observation**. If the row in question has a
+site\*year combination that is found in the overall site\*year
+combination list, then we know that site was surveyed in that year and
+therefore meets the first condition. We repeat for the first three
+conditions, if all three are met and the count is NA, we replace with a
+zero value.
+```{r}
+# all species*site combinations
+inverts_spp_sites <- 
+  inverts_clean %>% 
+  select(species_name, site_code) %>%
+  distinct() %>% 
+  arrange(site_code, species_name)
+
+# all site*year combinations
+inverts_yrs_sites <- 
+  inverts_clean %>% 
+  select(survey_year, site_code) %>%
+  distinct() %>% 
+  arrange(site_code, survey_year)
+
+# All of the species seen at that site
+# nested so that we have a single row per site to join to the yrs_sites dataframe
+inverts_spp_sites_nested <- 
+  inverts_spp_sites %>% 
+  nest(spp = species_name)
+
+
+# all all possible species at a site expanded by the surveyed years
+# NAs converted to zero
+inverts_data_addingzeros <- 
+ inverts_yrs_sites %>% 
+  left_join(inverts_spp_sites_nested, by = "site_code") %>% 
+  unnest(cols = spp) %>% 
+  mutate(abundance_per50 = NA) %>%
+  mutate(abundance_per50 = ifelse(is.na(abundance_per50), 0, abundance_per50)) %>%
+  mutate(abundance_per50 = as.numeric(abundance_per50)) 
+  
+#select columns needed
+inverts_filtered <- inverts_clean %>%
+  select(survey_year, site_code, species_name, abundance_per50)
+
+#now left join with inverts_filtered dataframe 
+inverts_data_addingzeros <- inverts_data_addingzeros %>%
+  rbind(inverts_filtered, inverts_data_addingzeros)
+
+#Data check for any remaining NA values per 50m2
+inverts_data_addingzeros |> filter(is.na(abundance_per50)) |> nrow()
+inverts_data_addingzeros |> filter(abundance_per50==0) |> nrow()
+
+
+#Averaging abundance_per50 fora site*year combination
+#For a single species at a site, summarise all of their abundance_per50 records
+inverts_data_addingzeros <- inverts_data_addingzeros %>%
+  group_by(species_name, site_code, survey_year) %>%
+  summarise(summed_abundanceper50_persiteyr = sum(abundance_per50, na.rm = TRUE), .groups = 'drop')
+
+#add in sitesummary_info that is now needed
+inverts_data_addingzeros <- inverts_data_addingzeros %>%
+  left_join(sitesurvey_info_inverts %>% select(survey_year, site_code, transects_persiteyr), 
+            by = c("survey_year", "site_code"))
+
+#Determine average for a species for a site in a given year
+avspp_persiteyr_inverts <- inverts_data_addingzeros %>%
+  mutate(avspp_persiteyr = summed_abundanceper50_persiteyr/ transects_persiteyr)  #Mean species per site per year - divide mean species per transect
+
+
+################ MinN attempt ##############
+# Calculate the minimum density per species per site
+min_density_inverts <- 
+  avspp_persiteyr_inverts %>%
+  filter(avspp_persiteyr > 0) %>%
+  summarise(minN = min(avspp_persiteyr), 
+            .by = c(site_code, species_name)) 
+
+# Join the min_density table to the main species count table
+inverts_data_with_minN <- 
+  avspp_persiteyr_inverts %>%
+  left_join(min_density_inverts, by = c("site_code", "species_name")) %>% 
+  mutate(site_yr = paste(site_code, survey_year, sep = "_"))
+
+# #export a data sheet here for mapping sites later on
+  # file_name <- "inverts_mappingsites_2024.csv"
+  # write.csv(inverts_data, file_name, row.names = FALSE)
+
+inverts_data <- 
+  inverts_data_with_minN %>% 
+  left_join(inverts_survey_list %>% 
+              summarise(latitude = mean(latitude), 
+                        longitude = mean(longitude), 
+                        .by = site_yr), 
+            by = join_by(site_yr)) %>% 
+  mutate(grid_cell = paste(latitude, longitude)) %>%  #grid cell column
+  mutate(latitude = round(latitude),
+         longitude = round(longitude), 
+         log_count = log10(avspp_persiteyr + minN/2)) %>%  # Use minN for log transformation
+  mutate(year = substr(site_yr, nchar(site_yr) - 3, nchar(site_yr)) %>% 
+           as.numeric(),
+         site_code = substr(site_yr, 1, nchar(site_yr) - 5)) %>% 
+  add_count(site_code, species_name, name = "n_site_species") %>% 
+  filter(n_site_species >= 5) %>% # n_sites_byspp = number of years in site*spp combination
+  filter(n_distinct(site_code) >= 20, # number of unique sites per spp
+         .by = species_name)
+
+
+################# END ####################
+
+```
+
+## Coral
+
+Here, I will load in all coral data, from the RLS database - this data
+is obtained through the photo-quadrats taken during the survey and then
+these photos are scored to the highest taxonomic level by a coral
+taxonomic expert, resulting in a coral percentage cover obtained through
+analysis via a specialised program Squiddle+, a quincunx grid of 5
+points was overlaid on each image and corals under each point were
+recorded; thus, taxa under 100 points per transect are cataloged.
+
+Observations that are only to species level have been used for this
+analysis. Photoquadrat coral data was only scored to species level from 2009                                                              
+onward.
+
+### Cleaning counts
+
+```{r}
+
+sum(is.na(coral_raw$percent_cover))
+
+#first let's check what groups are contained in the "coral raw" data frame
+summary_table_coral <- table(coral_raw$RLE_category)
+#view(summary_table_coral) 
+
+#change date format:
+coral_raw <- coral_raw %>%
+  mutate(survey_year = as.numeric(substring(survey_date, nchar(survey_date) - 3, nchar(survey_date))))
+
+#filter (and keep) inverts columns
+coral_clean <- 
+  coral_raw %>% 
+  filter(str_detect(label, "[A-Z]{1}[a-z]+\\s{1}[a-z]+$")) %>% 
+  filter(str_detect(country, "Australia")) %>% 
+  filter(str_detect(RLE_category, "Coral")) %>%
+  filter(str_detect(label_scheme, "RLS Australian Coral Species List|RLS/Lord Howe Island")) %>%
+  filter(!str_detect(label, "\\[|\\]")) %>% 
+  filter(!str_detect(label, "\\bcorals\\b")) %>% 
+  filter(!str_detect(label, "\\bcoral\\b")) %>% 
+  filter(!str_detect(label, "\\bsp\\b")) %>%
+  mutate(label = case_when(label == "Goniastrea australensis" ~ "Paragoniastrea australensis", 
+                                  TRUE ~ label)) %>%
+  as_tibble() %>% 
+  rename(species_name = label) %>% 
+  mutate(site_yr = paste(site_code, survey_year, sep = "_")) %>% 
+  mutate(total_surveys_siteyr = n_distinct(dataset_id), #NOTE: using dataset_id as per E.O. recommendation to avoid duplication
+         .by = c(site_yr,
+                 species_name)) %>%
+  mutate(sum_percent_cover_siteyr = sum(percent_cover), 
+            .by = c(site_yr, 
+                    species_name)) %>%
+  mutate(final_percent_cover = sum_percent_cover_siteyr/total_surveys_siteyr)
+
+#Create datframe for attributes that may be needed later
+coral_list <- 
+  coral_raw %>% 
+  select(survey_id,
+         site_code,
+         location,
+         area,
+         species_name = label,
+         survey_year,
+         depth,
+         percent_cover,
+         latitude,
+         longitude) %>% 
+  distinct()
+
+#Create dataframe for site level information
+coral_site_list <- 
+  coral_raw %>% 
+  select(site_code,
+         species_name = label,
+         survey_year,
+         latitude,
+         longitude) %>% 
+  distinct()
+
+#coral latitude and longitude dataframe
+coral_lat_lons <-
+  coral_raw %>% 
+  drop_na(latitude, longitude) %>% 
+  summarise(latitude = mean(latitude), 
+            longitude = mean(longitude), 
+            .by = site_code)
+
+```
+
+### Dealing with NAs
+
+We want NA values to be changed to zeros when all of the following
+conditions are met:
+
+1.  The site was surveyed that year.
+2.  The species was observed at least once at that site in any other year.
+3.  The species was recorded at that site at that year.
+
+To do this we need to make a list of all the site\*year combinations,
+all site\*species combinations, and all site\*year\*taxon combinations
+**that have at least one observation**. If the row in question has a
+site\*year combination that is found in the overall site\*year
+combination list, then we know that site was surveyed in that year and
+therefore meets the first condition. We repeat for the first three
+conditions, if all three are met and the count is NA, we replace with a
+zero value.
+```{r}
+# site*year combinations
+#Filter out rows where cover is "NA" or "0", select distinct combinations of 'site_code' and 'survey_year'
+#Create a new column 'site_code_yr' which concatenates 'site_code' and 'survey_year'
+coral_spp_sites <- 
+  coral_clean %>% 
+  select(species_name, site_code) %>%
+  distinct() %>% 
+  arrange(site_code, species_name)
+
+# site*year*species combinations
+#Similar to previous step, but combining 'site_code' and 'species_name' to create the new column 'site_code_spp'
+coral_yrs_sites <- 
+  coral_clean %>% 
+  select(survey_year, site_code) %>%
+  distinct() %>% 
+  arrange(site_code, survey_year)
+
+#This step nests the 'species_name' column by 'site_code'
+coral_spp_sites_nested <- 
+  coral_spp_sites %>% 
+  nest(spp = species_name)
+
+#Join 'coral_site_byyear' with 'coral_site_byspp_nested' by 'site_code'
+#Unnest the data, join coral clean to bring in 'percent cover' data
+#join with 'coral_lats_lons" to bring in latitude and longitude data
+#Replace 'NA' values in percent cover with '0' and compute the square root transformation to 'cover'
+
+coral_data_addingzeros <- 
+  coral_yrs_sites %>% 
+  left_join(coral_spp_sites_nested) %>% 
+  unnest(cols = spp) %>% 
+  left_join(coral_clean %>% 
+              select(species_name,
+                     site_code, 
+                     survey_year,
+                     final_percent_cover)) %>% 
+  left_join(coral_lat_lons, by = join_by(site_code)) %>% 
+  mutate(final_percent_cover = replace_na(final_percent_cover, 0)) %>%
+  mutate(sqrt_pcover = sqrt(final_percent_cover)) 
+
+#Transforming by log (as a check)
+#Accounting for a log transformation with zeros
+################ MinN attempt ##############
+# Calculate the minimum density per species per site
+min_density <- 
+  coral_data_addingzeros %>%
+  filter(final_percent_cover > 0) %>%
+  summarise(minN = min(final_percent_cover), 
+            .by = c(site_code, species_name)) 
+
+# Join the min_density table to the main species count table
+coral_data_with_minN <- 
+  coral_data_addingzeros %>%
+  left_join(min_density, by = c("site_code", "species_name")) %>% 
+  mutate(site_yr = paste(site_code, survey_year, sep = "_"))
+
+# #export a data sheet here for mapping sites later on
+ # file_name <- "coral_mappingsites_2024.csv"
+ # write.csv(coral_data_with_minN, file_name, row.names = FALSE)
+
+#This will be used as the main dataframe
+coral_data <- 
+  coral_data_with_minN |> 
+  mutate(latitude  = round(latitude),
+         longitude = round(longitude)) |> 
+  mutate(grid_cell = paste(latitude, longitude)) %>% #grid_cell column
+  mutate(transect_id = paste(site_code, survey_year, sep = "_")) %>% 
+  mutate(n_sites_byspp = n(), 
+         .by = c(site_code, species_name)) %>% 
+  mutate(n_obs_byspp = n(), .by = c(species_name)) %>% 
+  mutate(log_cover = log10(final_percent_cover + minN/2)) %>%  # Use minN for log transformation
+  filter(n_sites_byspp >= 5) %>% # n_sites_byspp = number of years in site*spp combination  
+  filter(n_distinct(site_code) >= 20, # number of unique sites per spp
+         .by = species_name) 
+
+```
+
+#Export all clean data files that will be used for modelling 
+```{r - export all clean data files for modelling}
+# #Algae
+# file_name <- "algae_data_2024.csv"
+# write.csv(algae_data, file_name, row.names = FALSE)
+# 
+# #Fish
+# file_name <- "fish_data_2024.csv"
+# write.csv(fish_data, file_name, row.names = FALSE)
+# 
+# #Inverts
+# file_name <- "inverts_data_2024.csv"
+# write.csv(inverts_data, file_name, row.names = FALSE)
+# 
+# #Coral
+# file_name <- "coral_data_2024.csv"
+# write.csv(coral_data, file_name, row.names = FALSE)
+
 ```
 
 # Modelling and plots
 The second half of this analysis runs a series of Linear Mixed Effects models to
 understand population trends of reef species around continental Australia from
-2008 - 2022, and then produce the plots as per those seen in the manuscript by
+1992 - 2024, and then produce the plots as per those seen in the manuscript by
 Johnson et al. (in review)
 
 # Data import
@@ -98,23 +1340,23 @@ coral_data <- read_csv("coral_data.csv", show_col_types = FALSE)
 ## Covariate data
 Read in further data covariate data that will be required
 ```{r covariate-data-import}
-#Species-level information
-species_tbl <- 
-  read_csv(file = "species_info.csv", 
-           show_col_types = FALSE, 
-           skip_empty_rows = TRUE) 
-
-#Temperature time-series (post-2008) data for each site
-temperature_raw <- 
-  read_csv(file =  "temperature_timeseries.csv",
-           show_col_types = FALSE, 
-           skip_empty_rows = TRUE)
-
-#Endemism dataframe
-endemism <- 
-  read_csv(file =  "endemism.csv",
-           show_col_types = FALSE, 
-           skip_empty_rows = TRUE)
+# #Species-level information
+# species_tbl <- 
+#   read_csv(file = "species_info.csv", 
+#            show_col_types = FALSE, 
+#            skip_empty_rows = TRUE) 
+# 
+# #Temperature time-series (post-2008) data for each site
+# temperature_raw <- 
+#   read_csv(file =  "temperature_timeseries.csv",
+#            show_col_types = FALSE, 
+#            skip_empty_rows = TRUE)
+# 
+# #Endemism dataframe
+# endemism <- 
+#   read_csv(file =  "endemism.csv",
+#            show_col_types = FALSE, 
+#            skip_empty_rows = TRUE)
 ```
 
 # Linear mixed effects models
@@ -145,29 +1387,25 @@ trends put into a table (slope, intercept, p-value, and significance of
 the trend).
 
 ## Algae LMM
-```{r}
+```{r - algae 1992 - 2023}
+
 result_algae <- tibble(
   species_name = character(),
   slope = numeric(),
   intercept = numeric(),
+  intercept1990 = numeric(),
+  intercept1991 = numeric(),
   p_value = numeric(),
-  ci_low = numeric(),
-  ci_high = numeric(),
+  ci_low_intercept = numeric(),
+  ci_high_intercept = numeric(),
+  ci_low_slope = numeric(),
+  ci_high_slope = numeric(),
   se = numeric(),
   sd_residuals = numeric(),
   aic = numeric(),
   bic = numeric(),
-  error_flag = character()  # New column to track the error flag
+  error_flag = character()  #column to track the error flag
 ) 
-
-
-###add in check of minimum number of years and observations for individual species (add to supplementary material)
-algae_data %>% 
-  select(species_name, survey_year) %>% 
-  distinct() %>% 
-  mutate(range_yrs = max(survey_year)-min(survey_year), 
-         .by = species_name) %>% 
-  count(species_name, range_yrs)
 
 for (i in unique(algae_data$species_name)) {
   
@@ -186,11 +1424,18 @@ for (i in unique(algae_data$species_name)) {
   tryCatch({
     
     algae_model <- 
-    lmerTest::lmer(sqrt_cover ~ survey_year + (1|site_code), 
+    lmerTest::lmer(log_cover ~ survey_year + (1|site_code), 
                    data = mod_data_algae) 
   
-  intercept <- lme4::fixef(algae_model)[1] %>% as.numeric()
-  slope <- lme4::fixef(algae_model)[2] %>% as.numeric()
+    intercept <- lme4::fixef(algae_model)[1] %>% as.numeric()
+    slope <- lme4::fixef(algae_model)[2] %>% as.numeric()
+  
+  #Determine the reference year from the data = 1992
+  reference_year <- min(mod_data_algae$survey_year)
+    
+  #Calculate intercept at year 1990 & 1991
+  intercept1990 <- intercept + slope * (1990 - reference_year)
+  intercept1991 <- intercept + slope * (1991 - reference_year)
   
   # Check if the model has a singular fit
   if (isSingular(algae_model)) {
@@ -201,14 +1446,21 @@ for (i in unique(algae_data$species_name)) {
     # Extracting p-value
     p_value <- summary(algae_model)$coefficients[2, "Pr(>|t|)"]
     
-    ci <- confint(algae_model, "survey_year")
-    ci_low <- ci[1]
-    ci_high <- ci[2]
+   ci <- confint(algae_model, method = "Wald")
+    
+    ci_low_intercept <- ci["(Intercept)", 1]
+    ci_high_intercept <- ci["(Intercept)", 2]
+    ci_low_slope <- ci["survey_year", 1]
+    ci_high_slope <- ci["survey_year", 2]
     
     se <- summary(algae_model)$coefficients[2, "Std. Error"]
     sd_residuals <- summary(algae_model)$sigma
     aic <- AIC(algae_model)
     bic <- BIC(algae_model)
+    
+    # Extract residuals
+    residuals <- residuals(algae_model)
+    
   }
   
   output <- summary(object = algae_model)
@@ -218,9 +1470,13 @@ for (i in unique(algae_data$species_name)) {
     add_row(species_name = i, 
             slope = slope, 
             intercept = intercept, 
+            intercept1990 = intercept1990, 
+            intercept1991 = intercept1991,
             p_value = p_value, 
-            ci_low = ci_low, 
-            ci_high = ci_high, 
+            ci_low_intercept = ci_low_intercept, 
+            ci_high_intercept = ci_high_intercept, 
+            ci_low_slope = ci_low_slope,
+            ci_high_slope = ci_high_slope,  
             se = se, 
             sd_residuals = sd_residuals,
             aic = aic,
@@ -234,25 +1490,56 @@ for (i in unique(algae_data$species_name)) {
     cat("Error message:", conditionMessage(e), "\n")
   })
 
-  
-  # print(summary(algae_model))
-  
 }
 
-# Liv's previous comment:
-#Model runs and produces results for 246 of the algae species - multiple species are having the error "boundary (singular) fit: see help('isSingular')" indicating there is a convergence issue with that species. Upon inspection of a few of the species where this error occurs in the model, there are only a very limited number of positive observations (>3 as set in the minimum parameters) in the data suggesting this could be causing issues in the algorithm's ability to find the optimal estimates of the model parameters. 
+#Determining % change (1992 - 2023)
+result_algae <- result_algae %>% 
+  mutate(y_1992 = 10^(intercept+(slope*1992)), 
+         y_2023 = 10^(intercept+(slope*2023)), 
+         y_1992_lwr = 10^(intercept+(ci_low_slope*1992)), 
+         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
+         y_1992_upr = 10^(intercept+(ci_high_slope*1992)), 
+         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
+         ) %>% 
+  mutate(difference = (y_2023-y_1992), 
+         difference_lwr = y_2023_lwr-y_1992_lwr, 
+         difference_upr = y_2023_upr-y_1992_upr) %>% 
+  mutate(thirtyyear_change = (difference/y_1992)*100,
+         thirtyyear_change_lwr = (difference_lwr/y_1992_lwr)*100,
+         thirtyyear_change_upr = (difference_upr/y_1992_upr)*100)
+
+#Determining % change (decade change)
+result_algae <- result_algae %>% 
+  mutate(y_2013 = 10^(intercept+(slope*2013)), 
+         y_2023 = 10^(intercept+(slope*2023)), 
+         y_2013_lwr = 10^(intercept+(ci_low_slope*2013)), 
+         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
+         y_2013_upr = 10^(intercept+(ci_high_slope*2013)), 
+         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
+         ) %>% 
+  mutate(diff = (y_2023-y_2013), 
+         diff_lwr = y_2023_lwr-y_2013_lwr, 
+         diff_upr = y_2023_upr-y_2013_upr) %>% 
+  mutate(decade_change = (diff/y_2013)*100,
+         decade_change_lwr = (diff_lwr/y_2013_lwr)*100,
+         decade_change_upr = (diff_upr/y_2013_upr)*100)
 
 ```
 
 ## Fish LMM
-```{r}
+```{r - year range 1992 - 2024}
+
 result_fish <- tibble(
   species_name = character(),
   slope = numeric(),
   intercept = numeric(),
+  intercept1990 = numeric(),
+  intercept1991 = numeric(),
   p_value = numeric(),
-  ci_low = numeric(),
-  ci_high = numeric(),
+  ci_low_intercept = numeric(),
+  ci_high_intercept = numeric(),
+  ci_low_slope = numeric(),
+  ci_high_slope = numeric(),
   se = numeric(),
   sd_residuals = numeric(),
   aic = numeric(),
@@ -261,35 +1548,32 @@ result_fish <- tibble(
 ) 
 
 
-###add in check of minimum number of years and observations for individual species (add to supplementary material)
-fish_data %>% 
-  select(species_name, survey_year) %>% 
-  distinct() %>% 
-  mutate(range_yrs = max(survey_year)-min(survey_year), 
-         .by = species_name) %>% 
-  count(species_name, range_yrs) 
-
-
 for (i in unique(fish_data$species_name)) {
   
   mod_data_fish <- 
     fish_data %>% filter(species_name == i)
-#   
-# # Check the number of unique levels of site_code for each species_name
-#   unique_levels <- n_distinct(mod_data_fish$site_code) 
-# 
-# 
-#   if (unique_levels <= 1) {
-#     warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
-#     next  # Skip to the next iteration
-#   }  
+
+# Check the number of unique levels of site_code for each species_name
+  unique_levels <- n_distinct(mod_data_fish$site_code)
+
+
+  if (unique_levels <= 1) {
+    warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
+    next  # Skip to the next iteration
+  }
   
   tryCatch({fish_model <- 
     lmerTest::lmer(log_count ~ year + (1|site_code), data = mod_data_fish) 
   
   intercept <- lme4::fixef(fish_model)[1] %>% as.numeric()
   slope <- lme4::fixef(fish_model)[2] %>% as.numeric()
-  # print(i)
+  
+  #Determine the reference year from the data = 1992
+  reference_year <- min(mod_data_fish$survey_year)
+    
+  #Calculate intercept at year 1990 & 1991
+  intercept1990 <- intercept + slope * (1990 - reference_year)
+  intercept1991 <- intercept + slope * (1991 - reference_year)
   
   # Check if the model has a singular fit
   if (isSingular(fish_model)) {
@@ -299,9 +1583,12 @@ for (i in unique(fish_data$species_name)) {
     # Extracting p-value
     p_value <- summary(fish_model)$coefficients[2, "Pr(>|t|)"]
     
-    ci <- confint(fish_model, "year")
-    ci_low <- ci[1]
-    ci_high <- ci[2]
+    ci <- confint(fish_model, method = "Wald")
+    
+    ci_low_intercept <- ci["(Intercept)", 1]
+    ci_high_intercept <- ci["(Intercept)", 2]
+    ci_low_slope <- ci["year", 1]
+    ci_high_slope <- ci["year", 2]
     
     se <- summary(fish_model)$coefficients[2, "Std. Error"]
     sd_residuals <- summary(fish_model)$sigma
@@ -314,10 +1601,14 @@ for (i in unique(fish_data$species_name)) {
   result_fish <- result_fish %>% 
     add_row(species_name = i, 
             slope = slope, 
-            intercept = intercept, 
+            intercept = intercept,
+            intercept1990 = intercept1990,
+            intercept1991 = intercept1991,
             p_value = p_value, 
-            ci_low = ci_low, 
-            ci_high = ci_high, 
+            ci_low_intercept = ci_low_intercept, 
+            ci_high_intercept = ci_high_intercept, 
+            ci_low_slope = ci_low_slope,
+            ci_high_slope = ci_high_slope, 
             se = se, 
             sd_residuals = sd_residuals,
             aic = aic,
@@ -334,31 +1625,62 @@ for (i in unique(fish_data$species_name)) {
   #print(summary(fish_model))
   
 }
+
+
+#Determining % change (1992 - 2024)
+result_fish <- result_fish %>% 
+  mutate(y_1992 = 10^(intercept+(slope*1992)), 
+         y_2024 = 10^(intercept+(slope*2024)), 
+         y_1992_lwr = 10^(intercept+(ci_low_slope*1992)), 
+         y_2024_lwr = 10^(intercept+(ci_low_slope*2024)),
+         y_1992_upr = 10^(intercept+(ci_high_slope*1992)), 
+         y_2024_upr = 10^(intercept+(ci_high_slope*2024))
+         ) %>% 
+  mutate(difference = (y_2024-y_1992), 
+         difference_lwr = y_2024_lwr-y_1992_lwr, 
+         difference_upr = y_2024_upr-y_1992_upr) %>% 
+  mutate(thirtyyear_change = (difference/y_1992)*100,
+         thirtyyear_change_lwr = (difference_lwr/y_1992_lwr)*100,
+         thirtyyear_change_upr = (difference_upr/y_1992_upr)*100)
+
+#Determining % change (decade change)
+result_fish <- result_fish %>% 
+  mutate(y_2013 = 10^(intercept+(slope*2013)), 
+         y_2023 = 10^(intercept+(slope*2023)), 
+         y_2013_lwr = 10^(intercept+(ci_low_slope*2013)), 
+         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
+         y_2013_upr = 10^(intercept+(ci_high_slope*2013)), 
+         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
+         ) %>% 
+  mutate(diff = (y_2023-y_2013), 
+         diff_lwr = y_2023_lwr-y_2013_lwr, 
+         diff_upr = y_2023_upr-y_2013_upr) %>% 
+  mutate(decade_change = (diff/y_2013)*100,
+         decade_change_lwr = (diff_lwr/y_2013_lwr)*100,
+         decade_change_upr = (diff_upr/y_2013_upr)*100)
+
 ```
 
 ## Mobile macro-invertebrates LMM
-```{r}
+```{r year range 1992 - 2024}
+
 result_inverts <- tibble(
   species_name = character(),
   slope = numeric(),
   intercept = numeric(),
+  intercept1990 = numeric(),
+  intercept1991 = numeric(),
   p_value = numeric(),
-  ci_low = numeric(),
-  ci_high = numeric(),
+  ci_low_intercept = numeric(),
+  ci_high_intercept = numeric(),
+  ci_low_slope = numeric(),
+  ci_high_slope = numeric(),
   se = numeric(),
   sd_residuals = numeric(),
   aic = numeric(),
   bic = numeric(),
-  error_flag = character()  # New column to track the error flag
+  error_flag = character()  #Column to track the error flag
 ) 
-
-###add in check of minimum number of years and observations for individual species (add to supplementary material)
-inverts_data %>% 
-  select(species_name, survey_year) %>% 
-  distinct() %>% 
-  mutate(range_yrs = max(survey_year)-min(survey_year), 
-         .by = species_name) %>% 
-  count(species_name, range_yrs) 
 
 for (i in unique(inverts_data$species_name)) {
   
@@ -379,7 +1701,13 @@ for (i in unique(inverts_data$species_name)) {
   
   intercept <- lme4::fixef(inverts_model)[1] %>% as.numeric()
   slope <- lme4::fixef(inverts_model)[2] %>% as.numeric()
-  # print(i)
+  
+  #Determine the reference year from the data = 1992
+  reference_year <- min(mod_data_inverts$survey_year)
+    
+  #Calculate intercept at year 1990 & 1991
+  intercept1990 <- intercept + slope * (1990 - reference_year)
+  intercept1991 <- intercept + slope * (1991 - reference_year)
   
   # Check if the model has a singular fit
   if (isSingular(inverts_model)) {
@@ -389,9 +1717,12 @@ for (i in unique(inverts_data$species_name)) {
     # Extracting p-value
     p_value <- summary(inverts_model)$coefficients[2, "Pr(>|t|)"]
     
-    ci <- confint(inverts_model, "survey_year")
-    ci_low <- ci[1]
-    ci_high <- ci[2]
+    ci <- confint(inverts_model, method = "Wald")
+    
+    ci_low_intercept <- ci["(Intercept)", 1]
+    ci_high_intercept <- ci["(Intercept)", 2]
+    ci_low_slope <- ci["survey_year", 1]
+    ci_high_slope <- ci["survey_year", 2]
     
     se <- summary(inverts_model)$coefficients[2, "Std. Error"]
     sd_residuals <- summary(inverts_model)$sigma
@@ -404,9 +1735,13 @@ for (i in unique(inverts_data$species_name)) {
   result_inverts <- result_inverts %>% 
     add_row(species_name = i, slope = slope, 
             intercept = intercept, 
+            intercept1990 = intercept1990,
+            intercept1991 = intercept1991,
             p_value = p_value,
-            ci_low = ci_low, 
-            ci_high = ci_high, 
+            ci_low_intercept = ci_low_intercept, 
+            ci_high_intercept = ci_high_intercept, 
+            ci_low_slope = ci_low_slope,
+            ci_high_slope = ci_high_slope, 
             se = se, 
             sd_residuals = sd_residuals,
             aic = aic,
@@ -419,36 +1754,64 @@ for (i in unique(inverts_data$species_name)) {
     cat("Error occurred for species:", i, "\n")
     cat("Error message:", conditionMessage(e), "\n")
   })
-  
-  # print(summary(inverts_model))
-  
+
 }
+
+#Determining % change (1992 - 2024)
+result_inverts <- result_inverts %>% 
+  mutate(y_1992 = 10^(intercept+(slope*1992)), 
+         y_2024 = 10^(intercept+(slope*2024)), 
+         y_1992_lwr = 10^(intercept+(ci_low_slope*1992)), 
+         y_2024_lwr = 10^(intercept+(ci_low_slope*2024)),
+         y_1992_upr = 10^(intercept+(ci_high_slope*1992)), 
+         y_2024_upr = 10^(intercept+(ci_high_slope*2024))
+         ) %>% 
+  mutate(difference = (y_2024-y_1992), 
+         difference_lwr = y_2024_lwr-y_1992_lwr, 
+         difference_upr = y_2024_upr-y_1992_upr) %>% 
+  mutate(thirtyyear_change = (difference/y_1992)*100,
+         thirtyyear_change_lwr = (difference_lwr/y_1992_lwr)*100,
+         thirtyyear_change_upr = (difference_upr/y_1992_upr)*100)
+
+
+#Determining % change (decade change)
+result_inverts <- result_inverts %>% 
+  mutate(y_2013 = 10^(intercept+(slope*2013)), 
+         y_2023 = 10^(intercept+(slope*2023)), 
+         y_2013_lwr = 10^(intercept+(ci_low_slope*2013)), 
+         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
+         y_2013_upr = 10^(intercept+(ci_high_slope*2013)), 
+         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
+         ) %>% 
+  mutate(diff = (y_2023-y_2013), 
+         diff_lwr = y_2023_lwr-y_2013_lwr, 
+         diff_upr = y_2023_upr-y_2013_upr) %>% 
+  mutate(decade_change = (diff/y_2013)*100,
+         decade_change_lwr = (diff_lwr/y_2013_lwr)*100,
+         decade_change_upr = (diff_upr/y_2013_upr)*100)
+
 ```
 
 ## Coral LMM
-```{r}
+```{r - year range 2008 - 2022}
+
 result_coral <- tibble(
   species_name = character(),
   slope = numeric(),
   intercept = numeric(),
+  intercept2007 = numeric(),
+  intercept2008 = numeric(),
   p_value = numeric(),
-  ci_low = numeric(),
-  ci_high = numeric(),
+  ci_low_intercept = numeric(),
+  ci_high_intercept = numeric(),
+  ci_low_slope = numeric(),
+  ci_high_slope = numeric(),
   se = numeric(),
   sd_residuals = numeric(),
   aic = numeric(),
   bic = numeric(),
   error_flag = character()  # New column to track the error flag
 ) 
-
-###add in check of minimum number of years and observations for individual species (add to supplementary material)
-coral_data %>% 
-  select(species_name, survey_year) %>% 
-  distinct() %>% 
-  mutate(range_yrs = max(survey_year)-min(survey_year), 
-         .by = species_name) %>% 
-  count(species_name, range_yrs) 
-
 
 for (i in unique(coral_data$species_name)) {
   
@@ -464,11 +1827,17 @@ for (i in unique(coral_data$species_name)) {
   }
   
   # Fit the mixed-effects model
-  tryCatch({coral_model <- lmerTest::lmer(sqrt_pcover ~ survey_year + (1|site_code), data = mod_data_coral) 
+  tryCatch({coral_model <- lmerTest::lmer(log_cover ~ survey_year + (1|site_code), data = mod_data_coral) 
   
   intercept <- lme4::fixef(coral_model)[1] %>% as.numeric()
   slope <- lme4::fixef(coral_model)[2] %>% as.numeric()
-  # print(i)
+  
+  #Determine the reference year from the data = 2008
+  reference_year <- min(mod_data_coral$survey_year)
+    
+  #Calculate intercept at year 2007 & 2008
+  intercept2007 <- intercept + slope * (2007 - reference_year)
+  intercept2008 <- intercept + slope * (2008 - reference_year)
   
   # Check if the model has a singular fit
   if (isSingular(coral_model)) {
@@ -478,14 +1847,22 @@ for (i in unique(coral_data$species_name)) {
     # Extracting p-value
     p_value <- summary(coral_model)$coefficients[2, "Pr(>|t|)"]
     
-    ci <- confint(coral_model, "survey_year")
-    ci_low <- ci[1]
-    ci_high <- ci[2]
+    ci <- confint(coral_model, method = "Wald")
     
+    ci_low_intercept <- ci["(Intercept)", 1]
+    ci_high_intercept <- ci["(Intercept)", 2]
+    ci_low_slope <- ci["survey_year", 1]
+    ci_high_slope <- ci["survey_year", 2]
+
     se <- summary(coral_model)$coefficients[2, "Std. Error"]
     sd_residuals <- summary(coral_model)$sigma
     aic <- AIC(coral_model)
     bic <- BIC(coral_model)
+    
+    # Extract residuals
+    residuals <- residuals(coral_model)
+      
+    
   }
   
   output <- summary(object = coral_model)
@@ -493,9 +1870,13 @@ for (i in unique(coral_data$species_name)) {
   result_coral <- result_coral %>% 
     add_row(species_name = i, slope = slope, 
             intercept = intercept, 
+            intercept2007 = intercept2007,
+            intercept2008 = intercept2008,
             p_value = p_value,
-            ci_low = ci_low, 
-            ci_high = ci_high, 
+            ci_low_intercept = ci_low_intercept, 
+            ci_high_intercept = ci_high_intercept, 
+            ci_low_slope = ci_low_slope,
+            ci_high_slope = ci_high_slope,
             se = se, 
             sd_residuals = sd_residuals,
             aic = aic,
@@ -510,67 +1891,49 @@ for (i in unique(coral_data$species_name)) {
     cat("Error message:", conditionMessage(e), "\n")
   })
   
-  # print(summary(coral_model))
-  
 }
 
-```
-
-# Rate of change
-The slope and p-value do not mean much on their own - thus it is
-important that a value is determined for the rate of change for each of
-the species.
-
-Below, the exact number of years a species has been measured that is
-included in the model is determined. The slope is then divided by this
-time portion, to give the rate of change of an individual species over 1
-year (in both proportion and in a percentage form). This result is then
-taken further (in the next chunk of code) and multiplied by 10 years -
-as a measure of Criteria A "Population Size Reduction" of the IUCN Red
-List Threatened Species Category (options are either 3 generations or 10
-years - many of these species gave an unknown generation length). This
-will then help determine the rate of change over a known number of years
-for that species, and in turn, help to assign their conservation status
-based on the IUCN Red List categories and criteria.
-```{r rate-change}
-#Algae
-result_algae <- result_algae %>% 
-  mutate(y_2008 = (intercept+slope*(2008))^2, 
-         y_2021 = (intercept+slope*(2021))^2) %>% 
-  mutate(diff = (y_2021-y_2008)) %>% 
-  mutate(pc = (diff/y_2008)*100) %>% 
-  mutate(decade_change = (pc/13)*10)
-
-#Coral
-result_coral <- result_coral %>% 
-  mutate(y_2008 = (intercept+slope*(2008))^2, 
-         y_2021 = (intercept+slope*(2021))^2) %>% 
-  mutate(diff = (y_2021-y_2008)) %>% 
-  mutate(pc = (diff/y_2008)*100) %>% 
-  mutate(decade_change = (pc/13)*10)
-
-#Fish
-result_fish <- result_fish %>% 
-  mutate(y_2008 = 10^(intercept+slope*(2008)), 
-         y_2021 = 10^(intercept+slope*(2021))) %>% 
-  mutate(diff = (y_2021-y_2008)) %>% 
-  mutate(pc = (diff/y_2008)*100) %>% 
-  mutate(decade_change = (pc/13)*10)
-
-#Invertebrates
+#Determining % change (2008 - 2022)
 result_inverts <- result_inverts %>% 
-  mutate(y_2008 = 10^(intercept+slope*(2008)), 
-         y_2021 = 10^(intercept+slope*(2021))) %>% 
-  mutate(diff = (y_2021-y_2008)) %>% 
-  mutate(pc = (diff/y_2008)*100) %>% 
-  mutate(decade_change = (pc/13)*10)
+  mutate(y_2008 = 10^(intercept+(slope*2008)), 
+         y_2022 = 10^(intercept+(slope*2022)), 
+         y_2008_lwr = 10^(intercept+(ci_low_slope*2008)), 
+         y_2022_lwr = 10^(intercept+(ci_low_slope*2022)),
+         y_2008_upr = 10^(intercept+(ci_high_slope*2008)), 
+         y_2022_upr = 10^(intercept+(ci_high_slope*2022))
+         ) %>% 
+  mutate(difference = (y_2022-y_2008), 
+         difference_lwr = y_2022_lwr-y_2008_lwr, 
+         difference_upr = y_2022_upr-y_2008_upr) %>% 
+  mutate(fourteenyear_change = (difference/y_2008)*100,
+         fourteenyear_change_lwr = (difference_lwr/y_2008_lwr)*100,
+         fourteenyear_change_upr = (difference_upr/y_2008_upr)*100)
+
+
+#Determining % change (decade change)
+result_coral <- result_coral %>% 
+  mutate(y_2012 = 10^(intercept+(slope*2012)), 
+         y_2022 = 10^(intercept+(slope*2022)), 
+         y_2012_lwr = 10^(intercept+(ci_low_slope*2012)), 
+         y_2022_lwr = 10^(intercept+(ci_low_slope*2022)),
+         y_2012_upr = 10^(intercept+(ci_high_slope*2012)), 
+         y_2022_upr = 10^(intercept+(ci_high_slope*2022))
+         ) %>% 
+  mutate(diff = (y_2022-y_2012), 
+         diff_lwr = y_2022_lwr-y_2012_lwr, 
+         diff_upr = y_2022_upr-y_2012_upr) %>% 
+  mutate(decade_change = (diff/y_2012)*100,
+         decade_change_lwr = (diff_lwr/y_2012_lwr)*100,
+         decade_change_upr = (diff_upr/y_2012_upr)*100)
+         
 ```
 
-```{r - Chi Squared Test}
-#ALL 638 species
+
+```{r - Chi Squared Test - signficant changes}
+###################### Endemism versus threat ##########################
 
 # Create a matrix with your data
-data <- matrix(c(136, 124, 197, 181), nrow = 2)
+data <- matrix(c(83, 130, 38, 157), nrow = 2)
 
 # Attach row and column names
 rownames(data) <- c("Threatened", "Non-Threatened")
@@ -580,7 +1943,7 @@ colnames(data) <- c("Endemic", "Non-Endemic")
 print(data)
 
 # Perform the chi-squared test
-result <- chisq.test(data)
+result <- chisq.test(data, correct = TRUE)
 
 # Print the result
 print(result)
@@ -592,25 +1955,46 @@ print(p_value)
 # Interpret the result
 if (p_value < 0.05) {
   cat("There is a significant association between endemism status and threatened status.\n")
+  
+  # Calculate Cramér's V
+  chi2_statistic <- result$statistic
+  n <- sum(data)
+  min_dim <- min(dim(data)) - 1
+  cramers_v <- sqrt(chi2_statistic / (n * min_dim))
+  
+  # Print Cramér's V
+  print(cramers_v)
+  
+  # Interpretation of Cramér's V
+  if (cramers_v < 0.1) {
+    cat("The association is very weak (Cramér's V =", cramers_v, ").\n")
+  } else if (cramers_v < 0.3) {
+    cat("The association is small (Cramér's V =", cramers_v, ").\n")
+  } else if (cramers_v < 0.5) {
+    cat("The association is medium (Cramér's V =", cramers_v, ").\n")
+  } else {
+    cat("The association is large (Cramér's V =", cramers_v, ").\n")
+  }
+  
 } else {
   cat("There is no significant association between endemism status and threatened status.\n")
 }
 
 
-##Significant declining species only 
+###################### Taxa versus threat ##########################
 
 # Create a matrix with your data
-data <- matrix(c(47, 260, 31, 378), nrow = 2)
+data <- matrix(c(41, 58, 30, 48, 50, 181), nrow = 2)
 
 # Attach row and column names
 rownames(data) <- c("Threatened", "Non-Threatened")
-colnames(data) <- c("Endemic", "Non-Endemic")
+colnames(data) <- c("Invertebrates", "Macroalgae", "Fishes")
 
 # Print the data
 print(data)
 
 # Perform the chi-squared test
-result <- chisq.test(data, correct = FALSE)
+result <- chisq.test(data, correct = TRUE)
 
 # Print the result
 print(result)
@@ -621,95 +2005,290 @@ print(p_value)
 
 # Interpret the result
 if (p_value < 0.05) {
-  cat("There is a significant association between endemism status and threatened status.\n")
+  cat("There is a significant association between taxa and threatened status.\n")
+  
+  # Calculate Cramér's V
+  chi2_statistic <- result$statistic
+  n <- sum(data)
+  min_dim <- min(dim(data)) - 1
+  cramers_v <- sqrt(chi2_statistic / (n * min_dim))
+  
+  # Print Cramér's V
+  print(cramers_v)
+  
+  # Interpretation of Cramér's V
+  if (cramers_v < 0.1) {
+    cat("The association is very weak (Cramér's V =", cramers_v, ").\n")
+  } else if (cramers_v < 0.3) {
+    cat("The association is small (Cramér's V =", cramers_v, ").\n")
+  } else if (cramers_v < 0.5) {
+    cat("The association is medium (Cramér's V =", cramers_v, ").\n")
+  } else {
+    cat("The association is large (Cramér's V =", cramers_v, ").\n")
+  }
+  
 } else {
-  cat("There is no significant association between endemism status and threatened status.\n")
+  cat("There is no significant association between taxa and threatened status.\n")
 }
 
-#1 in 10 endemics are threatened - almost twice as greater proportion of endemics were threatened compared to non-endemics (0.056)
-#27/297 and 20/408
+
+###################### Biogeography versus threat ##########################
+
+# Create a matrix with your data
+data <- matrix(c(108, 202, 13, 85), nrow = 2)
+
+# Attach row and column names
+rownames(data) <- c("Threatened", "Non-Threatened")
+colnames(data) <- c("Temperate", "Tropical")
+
+# Print the data
+print(data)
+
+# Perform the chi-squared test
+result <- chisq.test(data, correct = TRUE)
+
+# Print the result
+print(result)
+
+# Extract and print the p-value
+p_value <- result$p.value
+print(p_value)
+
+# Interpret the result
+if (p_value < 0.05) {
+  cat("There is a significant association between biogeography and threatened status.\n")
+  
+  # Calculate Cramér's V
+  chi2_statistic <- result$statistic
+  n <- sum(data)
+  min_dim <- min(dim(data)) - 1
+  cramers_v <- sqrt(chi2_statistic / (n * min_dim))
+  
+  # Print Cramér's V
+  print(cramers_v)
+  
+  # Interpretation of Cramér's V
+  if (cramers_v < 0.1) {
+    cat("The association is very weak (Cramér's V =", cramers_v, ").\n")
+  } else if (cramers_v < 0.3) {
+    cat("The association is small (Cramér's V =", cramers_v, ").\n")
+  } else if (cramers_v < 0.5) {
+    cat("The association is medium (Cramér's V =", cramers_v, ").\n")
+  } else {
+    cat("The association is large (Cramér's V =", cramers_v, ").\n")
+  }
+  
+} else {
+  cat("There is no significant association between biogeography and threatened status.\n")
+}
+
 ```
 
+#Joining results before plotting
+```{r - joining each decade result together for plotting}
+
+#Read in a pre-existing data sheet to extract information about the species
+othervariables <- read_csv("final_model_export.csv") %>%
+  select(species_name, 
+         biogeog, 
+         taxon, 
+         class, 
+         max_depth, 
+         max_length, 
+         endemism, 
+         IUCN, 
+         IUCN_category, 
+         date_assessed) %>%
+  mutate(biogeog = recode(biogeog, 
+                          `cool (temperate)` = "temperate (cool)", 
+                          `warm (temperate)` = "temperate (warm)"))
+
+
+##############################Full time series #####################
+
+#Bind results data frames together
+alltime_change <- bind_rows(result_algae, result_coral, result_inverts, result_fish)
+
+#add other information for plotting 
+alltime_change <- alltime_change %>% 
+  select(species_name, 
+         slope, 
+         intercept, 
+         p_value, 
+         decade_change_lwr, 
+         decade_change_upr, 
+         se,
+         sd_residuals,
+         aic,
+         bic,
+         error_flag,
+         sig,
+         decade_change) %>%
+  left_join(othervariables, by = "species_name")
+
+#add in column with direction of change
+alltime_change <- alltime_change %>% 
+  mutate(slope_category = ifelse(slope < 0, "declining", "increasing"))
+
+#Remove species with singularity errors from data frame for exporting 
+alltime_change <- alltime_change %>% 
+  filter(error_flag != "Singular Fit") %>%
+  select(-error_flag)
+#Note - no species with singularity errors 
+
+#Export this final list - 1992 - 2024
+#write_csv(alltime_change, "alltime_change.csv")
+```
 
 #Plotting
 Read in csv of LMM results, rate of change from above and the species current 
 IUCN status.This spreadsheet has also filtered out all of the species that 
 produced the 'isSingular' error in the modelling stage. 
 ```{r}
-#Read in data
-trending_species <- read_csv("LMM_output.csv", show_col_types = FALSE)
+alltime_change <- read_csv("alltime_change.csv") %>%
+  mutate(biogeog = recode(biogeog, 
+                          `cool (temperate)` = "temperate (cool)", 
+                          `warm (temperate)` = "temperate (warm)")) 
 
 #Decade decline plots
-trending_species$taxon <- factor(trending_species$taxon, levels = c("Macroalgae", "Invertebrate", "Vertebrate"))
-trending_species$biogeog <- factor(trending_species$biogeog, levels = c("cool (temperate)", "warm (temperate)", "tropical"))
+alltime_change$taxon <- factor(alltime_change$taxon, levels = c("Macroalgae", "Invertebrate", "Vertebrate"))
+alltime_change$biogeog <- factor(alltime_change$biogeog, levels = c("temperate (cool)", "temperate (warm)", "tropical"))
+
 
 #Endemic species plot
-trending_species %>% 
-  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
-                           taxon == "Invertebrate" ~ "b) Mobile macro-invertebrates",
-                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
-  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Mobile macro-invertebrates", "c) Fishes"))) %>%
-  filter(p_value < 0.05, 
-         slope < 0, 
-         endemism == "endemic") %>% 
+# Define the colors used for the `geom_rect` layers
+fill_colors <- c("#cccc33", "yellow", "orange", "red")
+
+endemicdecade <- alltime_change %>%
+  # Combine taxon and biogeog factor conversion into a single mutate call
+  mutate(
+    taxon = case_when(
+      taxon == "Vertebrate" ~ "c) Fishes",
+      taxon == "Invertebrate" ~ "b) Invertebrates",
+      taxon == "Macroalgae" ~ "a) Macroalgae"
+    ),
+    taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes")),
+    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)"))
+  ) %>%
+  filter(p_value < 0.05, slope < 0, endemism == "endemic") %>%
   ggplot(aes(x = decade_change, y = reorder(species_name, -decade_change))) +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -0, xmax = -30, fill = "#cccc33") +   
+
+  # Define the background rectangles with xmin and xmax values
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = 0, xmax = -30, fill = "#cccc33") +
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -30, xmax = -50, fill = "yellow") +
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -50, xmax = -80, fill = "orange") +
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = "red") +
+
+  # Add vertical dashed lines
   geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
-  geom_errorbarh(aes(xmin = after_stat(x - stat(y)), xmax = after_stat(x + stat(y)), height = 0.2)) + 
-  geom_point(aes(shape = biogeog), size = 4.5) + #try a bigger sized point
-  #geom_point(size = 3) + #####
   geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
-    facet_wrap(~taxon, ncol = 1, scales = "free_y") +
+
+  # Error bars and points for species with position adjustment
+  geom_errorbarh(aes(xmin = decade_change_lwr, xmax = decade_change_upr, height = 0.2)) +
+  geom_point(aes(shape = biogeog), size = 4, position = position_nudge(y = -0.12)) +
+
+  # Add facets for taxa with free y scale and spacing
+  ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
+
+  # Customize shapes for the different biogeographies
+  scale_shape_manual(values = c(
+    "temperate (cool)" = 16,
+    "temperate (warm)" = 17,
+    "tropical" = 15
+  )) +
+
+  # Axis labels and legend title
   labs(
     x = "Rate of decline over a decade",
     y = "Species Name",
-    shape = "") +
+    shape = ""
+  ) +
+
+  # Apply minimal theme and customizations
   theme_minimal() +
   theme(
-    legend.position = "right",  
-    panel.grid.major.y = element_blank(),  
-    axis.title.y = element_blank(),  
-    axis.text.y = element_text(face = "italic"), 
+    legend.position = "right",
+    panel.grid.major.y = element_blank(),  # Remove grid lines for y-axis
+    axis.title.y = element_blank(),        # Remove y-axis title
+    axis.text.y = element_text(face = "italic"),  # Italicize species names
     plot.title = element_text(hjust = 0.5),
-    strip.text = element_text(size = 12, hjust = 0)
+    strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
   )
 
+#Save plot of endemics
+pdf("alltime_change_EndemicsDecade_Final.pdf", width = 8, height = 12)  # Dimensions in inches
+print(endemicdecade)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+
+#####################
+
+
 #Non-endemic species plot
-trending_species %>% 
-  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
-                           taxon == "Invertebrate" ~ "b) Mobile macro-invertebrates",
-                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
-  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Mobile macro-invertebrates", "c) Fishes"))) %>%
-  filter(p_value < 0.05, 
-         slope < 0, 
-         endemism == "non-endemic") %>% 
+# Define the colors used for the `geom_rect` layers
+fill_colors <- c("#cccc33", "yellow", "orange", "red")
+
+nonendemicsdecade <- alltime_change %>%
+  # Combine taxon and biogeog factor conversion into a single mutate call
+  mutate(
+    taxon = case_when(
+      taxon == "Vertebrate" ~ "c) Fishes",
+      taxon == "Invertebrate" ~ "b) Invertebrates",
+      taxon == "Macroalgae" ~ "a) Macroalgae"
+    ),
+    taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes")),
+    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)"))
+  ) %>%
+  filter(p_value < 0.05, slope < 0, endemism == "non-endemic") %>%
   ggplot(aes(x = decade_change, y = reorder(species_name, -decade_change))) +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -0, xmax = -30, fill = "#cccc33") +   
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -30, xmax = -50, fill = "yellow") +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -50, xmax = -80, fill = "orange") +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = "red") +
+  
+  # Define the background rectangles with xmin and xmax values
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -0, xmax = -30, fill = fill_colors[1]) +
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -30, xmax = -50, fill = fill_colors[2]) +
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -50, xmax = -80, fill = fill_colors[3]) +
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = fill_colors[4]) +
+
+  # Add vertical dashed lines
   geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
-  geom_errorbarh(aes(xmin = after_stat(x - stat(y)), xmax = after_stat(x + stat(y)), height = 0.2)) + 
-  geom_point(aes(shape = biogeog), size = 4.5) +
-  geom_point(size = 3) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
-   ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
+  
+  # Error bars and points for species
+  geom_errorbarh(aes(xmin = decade_change_lwr, xmax = decade_change_upr, height = 0.2)) +
+  geom_point(aes(shape = biogeog), size = 4) +
+
+  # Add facets for taxa with free y scale and spacing
+  ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
+
+  # Customize shapes for the different biogeographies
+  scale_shape_manual(values = c(
+    "temperate (cool)" = 16,
+    "temperate (warm)" = 17,
+    "tropical" = 15
+  )) +
+
+  # Axis labels and legend title
   labs(
     x = "Rate of decline over a decade",
     y = "Species Name",
-    shape = "") +
+    shape = ""
+  ) +
+
+  # Apply minimal theme and customizations
   theme_minimal() +
   theme(
-    legend.position = "right",  
-    panel.grid.major.y = element_blank(),  
-    axis.title.y = element_blank(),  
-    axis.text.y = element_text(face = "italic"), 
+    legend.position = "right",
+    panel.grid.major.y = element_blank(),  # Remove grid lines for y-axis
+    axis.title.y = element_blank(),        # Remove y-axis title
+    axis.text.y = element_text(face = "italic"),  # Italicize species names
     plot.title = element_text(hjust = 0.5),
-    strip.text = element_text(size = 11, hjust = 0, vjust = 1)
+    strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
   )
+
+
+#Save plot of non-endemics
+pdf("alltime_change_NonendemicsDecade_Final.pdf", width = 8, height = 12)  # Dimensions in inches
+print(nonendemicsdecade)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+
 ```
 
 #IUCN Status versus trend plots
@@ -728,14 +2307,13 @@ all_species_endemic <- trending_species %>%
     decade_change >= -100 & decade_change < -80 ~ "Critically Endangered"
   )) 
 
-all_species_endemic  %>%
+all_species_endemic <- all_species_endemic  %>%
   count(taxon, IUCN, new, species_name) %>%
   mutate(new = factor(new, levels = c("Endangered", "Vulnerable", "Near Threatened", "Least Concern", "Lower Risk/conservation dependent"))) %>%
-  mutate(taxon = case_when(taxon == "Vertebrate" ~ "d) Fishes",
-                           taxon == "Invertebrate" ~ "c) Mobile macro-invertebrates",
-                           taxon == "Macroalgae" ~ "a) Macroalgae",
-                           taxon == "Coral" ~ "b) Corals")) %>%
-  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Corals", "c) Mobile macro-invertebrates", "d) Fishes"))) %>%
+  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
+                           taxon == "Invertebrate" ~ "b) Invertebrates",
+                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
+  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes"))) %>%
   ggplot(aes(x = IUCN, y = n, fill = new)) +
   geom_col() +
   facet_wrap(~taxon, ncol = 1,scales = "free_y") + 
@@ -761,6 +2339,14 @@ all_species_endemic  %>%
     axis.title.x = element_text(margin = margin(r = 40, t = 20))
   )
 
+
+#Save plot of IUCN endemics
+pdf("alltime_change_EndemicsIUCN_Final.pdf", width = 6, height = 8)  # Dimensions in inches
+print(all_species_endemic)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+
+################################ NON-ENDEMICS #######################################
+
 #NON-ENDEMICS
 #Specify order of facet panels in plots
 #desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
@@ -775,14 +2361,13 @@ all_species_non_endemic <- trending_species %>%
     decade_change >= -100 & decade_change < -80 ~ "Critically Endangered"
   )) 
 
-all_species_non_endemic %>%
+all_species_non_endemic <- all_species_non_endemic %>%
   count(taxon, IUCN, new, species_name) %>%
-  mutate(new = factor(new, levels = c("Endangered", "Vulnerable", "Near Threatened", "Least Concern"))) %>%
-  mutate(taxon = case_when(taxon == "Vertebrate" ~ "d) Fishes",
-                           taxon == "Invertebrate" ~ "c) Mobile macro-invertebrates",
-                           taxon == "Macroalgae" ~ "a) Macroalgae",
-                           taxon == "Coral" ~ "b) Corals")) %>%
-  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Corals", "c) Mobile macro-invertebrates", "d) Fishes"))) %>%
+  mutate(new = factor(new, levels = c("Endangered", "Vulnerable", "Near Threatened", "Least Concern", "Lower Risk/conservation dependent"))) %>%
+  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
+                           taxon == "Invertebrate" ~ "b) Invertebrates",
+                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
+  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes"))) %>%
   ggplot(aes(x = IUCN, y = n, fill = new)) +
   geom_col() +
   facet_wrap(~taxon, ncol = 1,scales = "free_y") + 
@@ -807,18 +2392,90 @@ all_species_non_endemic %>%
     strip.text.y = element_text(margin = margin(r = 10)),
     axis.title.x = element_text(margin = margin(r = 40, t = 20))
   )
+
+#Save plot of IUCN endemics
+pdf("alltime_change_NonendemicsIUCN_Final.pdf", width = 6, height = 8)  # Dimensions in inches
+print(all_species_non_endemic)  # Replace 'map' with your plot object
+dev.off()  # Close the device
 ```
+
+```{r - bar plot of evaluation dates}
+
+yearassessed <- alltime_change %>%
+  select(species_name, IUCN, date_assessed) %>%
+  mutate(year_assessed = case_when(
+    date_assessed == "Not Evaluated" ~ "Not Evaluated",  # Assign "Not Evaluated" if date_assessed is "Not Evaluated"
+    !is.na(date_assessed) & date_assessed != "" ~ {
+      parsed_date <- parse_date_time(date_assessed, orders = c("dmy", "mdy"), quiet = TRUE)
+      as.character(year(parsed_date))  # Extract the year and convert to character
+    },
+    TRUE ~ "Not Evaluated"  # Assign "Not Evaluated" for all other NA cases
+  ))
+
+#Summarise the number of IUCN assessments in a given year
+yearassessed <- yearassessed %>%
+  group_by(year_assessed) %>%             
+  summarise(total_species = n(),           
+            .groups = 'drop') 
+
+
+# Create the bar plot with minimal theme and black fill
+yearassessed_plot <- ggplot(yearassessed, aes(x = factor(year_assessed, levels = unique(year_assessed)), y = total_species)) +
+  geom_bar(stat = "identity", fill = "black", color = "black", width = 0.8) +
+  labs(x = "Assessment Year",
+       y = "Number of Assessments") +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+    axis.title = element_text(face = "bold", size = 12),  # Adjust size here
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    plot.background = element_blank(),
+    axis.line = element_line(color = "black") 
+  ) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_discrete(expand = c(0, 0))
+
+pdf("Year_assessed.pdf", width = 9, height = 10)  # Dimensions in inches
+print(yearassessed_plot)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+
+
+#There are 342 species "Not Evaluated" - 47% of common shallow reef species not assessed on the IUCN
+```
+
 
 #Produce map of sites where all data is available from around Australia
 #MAP
 ```{r packages for mapping}
-library("ggplot2")
-library("sf")
-library("rnaturalearth")
-library("rnaturalearthdata")
-library("ggspatial")
-library("ozmaps")
-library("rnaturalearthhires")
+library(dplyr)  
+library(ggplot2)
+library(ggspatial)
+library(ozmaps)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(rnaturalearthhires)
+library(ggspatial)
+library(tidyr)
+```
+
+```{r - read in data}
+#Algae
+algae_mappingsites <- read_csv("algae_mappingsites_2024.csv")
+
+#Fish
+fish_mappingsites <- read_csv("fish_mappingsites_2024.csv")
+
+#Inverts
+inverts_mappingsites <- read_csv("inverts_mappingsites_2024.csv")
+
+#Coral
+coral_mappingsites <- read_csv("coral_mappingsites_2024.csv")
+
 ```
 
 ```{r - themes}
@@ -826,47 +2483,116 @@ theme_set(theme_bw())
 world <- ne_countries(scale = "medium", returnclass = "sf")
 class(world)
 ```
+
 #Determine latitude and longitude points
 ```{r - determine lats and longs - Clean}
 #algae
-algae_lats_longs_clean <- data.frame(Latitude = algae_data$latitude, Longitude = algae_data$longitude)
+algae_lats_longs_clean <- algae_mappingsites  %>%
+  select(latitude, longitude, site_code, species_name)
 
 #fish
-fish_lats_longs_clean <- data.frame(Latitude = fish_data$latitude, Longitude = fish_data$longitude)
+fish_lats_longs_clean <- fish_mappingsites %>%
+  select(latitude, longitude, site_code, species_name)
 
 #inverts
-inverts_lats_longs_clean <- data.frame(Latitude = inverts_data$latitude, Longitude = inverts_data$longitude)
+inverts_lats_longs_clean <- inverts_mappingsites %>%
+  select(latitude, longitude, site_code, species_name)
 
 #coral
-coral_lats_longs_clean <- data.frame(Latitude = coral_data$latitude, Longitude = coral_data$longitude)
+coral_lats_longs_clean <- coral_mappingsites %>%
+  select(latitude, longitude, site_code, species_name)
 
 # Combine latitude and longitude tables for algae, fish, inverts, and coral
-all_lats_longs_clean <- bind_rows(algae_lats_longs_clean, fish_lats_longs_clean, inverts_lats_longs_clean, coral_lats_longs_clean)
+all_lats_longs_clean <- bind_rows(algae_lats_longs_clean, fish_lats_longs_clean, inverts_lats_longs_clean, coral_lats_longs_clean) %>%
+  select(latitude, longitude)
 
+#Remove duplicates
+all_lats_longs_clean <- all_lats_longs_clean %>%
+  select(latitude, longitude) %>%
+  distinct()
+
+all_lats_longs_clean <- all_lats_longs_clean[!duplicated(all_lats_longs_clean[, c("latitude", "longitude")]), ]
 ```
+
 #Produce map
 ```{r - lats and long code for map}
 #RAW data map
 coordinates <- all_lats_longs_clean
 
 #how many sites in total are on this map?
-unique_species_count <- length(unique(coordinates$Latitude))
-unique_species_count
+unique_species_count <- length(unique(coordinates$latitude))
+unique_species_count #2652 sites
 
-
-# Create a simple world map for context
+# Load world and Australian states data
 world <- ne_countries(scale = "medium", returnclass = "sf")
 oz_states <- ne_states(country = "Australia", returnclass = "sf")
 
-# Plot the map with your data points
-ggplot(data = world) +
-  geom_sf(data = oz_states) +
-  geom_point(data = coordinates, aes(x = Longitude, y = Latitude), color = "deepskyblue") +
-  xlab("Longitude") + ylab("Latitude") +
+#read in covariates
+covariates <- read_csv("covariates_final.csv")
+
+# Select relevant columns from covariates
+covariates_selected <- covariates %>%
+  select(Latitude, Longitude, temperature_mean_2020) %>%
+  rename(latitude= Latitude, longitude = Longitude)
+
+# Merge coordinates with temperature data
+merged_data <- coordinates %>%
+  left_join(covariates_selected, by = c("latitude", "longitude"))
+
+# Assign temperature categories
+merged_data <- merged_data %>%
+  mutate(temperature_category = case_when(
+    temperature_mean_2020 < 17.5 ~ "temperate (cool)",
+    temperature_mean_2020 >= 17.5 & temperature_mean_2020 < 23 ~ "temperate (warm)",
+    temperature_mean_2020 >= 23 ~ "tropical",
+    TRUE ~ NA_character_  # Set to NA instead of "Unknown"
+  ))
+
+# Fill down the temperature categories for NAs
+merged_data <- merged_data %>%
+  arrange(latitude, longitude) %>%  # Ensure data is sorted by lat/long
+  fill(temperature_category, .direction = "down")
+
+# Optionally, replace the remaining NAs with "Unknown"
+merged_data <- merged_data %>%
+  mutate(temperature_category = ifelse(is.na(temperature_category), "Unknown", temperature_category))
+
+#re-order key
+merged_data$temperature_category <- factor(merged_data$temperature_category, 
+                                            levels = c("tropical", 
+                                                       "temperate (warm)", 
+                                                       "temperate (cool)"))
+# Create the map
+map <- ggplot() +
+  geom_sf(data = world, fill = "gray90", color = "gray50") +
+  geom_sf(data = oz_states, fill = "gray90", color = "gray50") +
+  geom_point(data = merged_data, 
+             aes(x = longitude, y = latitude, fill = temperature_category), 
+             size = 1.8, alpha = 0.9, shape = 21, color = "grey10") +  # Black borders
+  scale_fill_manual(values = c("temperate (cool)" = "dodgerblue2", 
+                               "temperate (warm)" = "darkgoldenrod1", 
+                               "tropical" = "firebrick2")) +  # Fill colors
+  xlab("Longitude") + 
+  ylab("Latitude") +
   coord_sf(xlim = c(110.00, 160.00), ylim = c(-45.00, -8.00), expand = FALSE) +
   annotation_scale(location = "bl", width_hint = 0.3) +
   annotation_north_arrow(location = "bl", which_north = "true",
                          pad_x = unit(0.1, "in"), pad_y = unit(0.3, "in"),
                          style = north_arrow_fancy_orienteering) +
-  theme_bw(base_size = 8)
+  labs(fill = "Biogeography") +  # Legend title for fill colors
+  guides(fill = guide_legend(override.aes = list(size = 4))) +  # Larger legend points
+  theme_minimal(base_size = 8) +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size = 7),
+        axis.title = element_text(size = 9))
+
+# Print the map
+print(map)
+
+pdf("Final_map.pdf", width = 10, height = 7)  # Dimensions in inches
+print(map)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+
 ```
+

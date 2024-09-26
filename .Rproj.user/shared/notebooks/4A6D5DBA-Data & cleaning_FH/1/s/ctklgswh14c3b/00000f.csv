@@ -1,0 +1,6 @@
+"0",""
+"0","# Raw in-situ (ATRC) Algae data"
+"0","algae_raw <- read_csv(""ep_m3.csv"", "
+"0","                      show_col_types = FALSE)"
+"2","Error: 'ep_m3.csv' does not exist in current working directory ('C:/Users/johnsono/Desktop').
+"
