@@ -26,7 +26,7 @@ The following document provides the R code for the analysis for the paper: Johns
 +------------------------+-------------------------------------------------------------------------------------------------------+
 | **Article citation**   | Johnson *et al.* (in review.) Poorly studied reef species face elevated extinction risk warming. |
 +------------------------+-------------------------------------------------------------------------------------------------------+
-| **Time series**        | 2008-2022                                                                                             |
+| **Time series**        | 1992 - 2024                                                                                              |
 +------------------------+-------------------------------------------------------------------------------------------------------+
 | **Geographical scale** | Continental Australia                                                                                 |
 +------------------------+-------------------------------------------------------------------------------------------------------+
@@ -1328,13 +1328,13 @@ Johnson et al. (in review)
 # Data import
 Read in the cleanly produced data files that were created in the chunks above. 
 ```{r - read in all tidied csv files}
-algae_data <- read_csv("algae_data.csv", show_col_types = FALSE)
+algae_data <- read_csv("algae_data_2024.csv", show_col_types = FALSE)
 
-fish_data <- read_csv("fish_data.csv", show_col_types = FALSE)
+fish_data <- read_csv("fish_data_2024.csv", show_col_types = FALSE)
 
-inverts_data <- read_csv("inverts_data.csv", show_col_types = FALSE)
+inverts_data <- read_csv("inverts_data_2024.csv", show_col_types = FALSE)
 
-coral_data <- read_csv("coral_data.csv", show_col_types = FALSE)
+coral_data <- read_csv("coral_data_2024.csv", show_col_types = FALSE)
 ```
 
 ## Covariate data
@@ -1894,7 +1894,7 @@ for (i in unique(coral_data$species_name)) {
 }
 
 #Determining % change (2008 - 2022)
-result_inverts <- result_inverts %>% 
+result_coral <- result_coral %>% 
   mutate(y_2008 = 10^(intercept+(slope*2008)), 
          y_2022 = 10^(intercept+(slope*2022)), 
          y_2008_lwr = 10^(intercept+(ci_low_slope*2008)), 
@@ -2123,7 +2123,9 @@ alltime_change <- alltime_change %>%
          bic,
          error_flag,
          sig,
-         decade_change) %>%
+         decade_change,
+         thirtyyear_change,
+         fourteenyear_change) %>%
   left_join(othervariables, by = "species_name")
 
 #add in column with direction of change
@@ -2145,7 +2147,7 @@ Read in csv of LMM results, rate of change from above and the species current
 IUCN status.This spreadsheet has also filtered out all of the species that 
 produced the 'isSingular' error in the modelling stage. 
 ```{r}
-alltime_change <- read_csv("alltime_change.csv") %>%
+alltime_change <- alltime_change %>%
   mutate(biogeog = recode(biogeog, 
                           `cool (temperate)` = "temperate (cool)", 
                           `warm (temperate)` = "temperate (warm)")) 
@@ -2215,6 +2217,8 @@ endemicdecade <- alltime_change %>%
     strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
   )
 
+plot(endemicdecade)
+
 #Save plot of endemics
 pdf("alltime_change_EndemicsDecade_Final.pdf", width = 8, height = 12)  # Dimensions in inches
 print(endemicdecade)  # Replace 'map' with your plot object
@@ -2283,6 +2287,7 @@ nonendemicsdecade <- alltime_change %>%
     strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
   )
 
+plot(nonendemicsdecade)
 
 #Save plot of non-endemics
 pdf("alltime_change_NonendemicsDecade_Final.pdf", width = 8, height = 12)  # Dimensions in inches
@@ -2297,7 +2302,7 @@ dev.off()  # Close the device
 #desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
 
 #ENDEMICS
-all_species_endemic <- trending_species %>%
+all_species_endemic <- alltime_change %>%
   filter(endemism == "endemic") %>%
   mutate(new = case_when(
     decade_change >= 0 ~ "Least Concern",
@@ -2339,7 +2344,6 @@ all_species_endemic <- all_species_endemic  %>%
     axis.title.x = element_text(margin = margin(r = 40, t = 20))
   )
 
-
 #Save plot of IUCN endemics
 pdf("alltime_change_EndemicsIUCN_Final.pdf", width = 6, height = 8)  # Dimensions in inches
 print(all_species_endemic)  # Replace 'map' with your plot object
@@ -2351,7 +2355,7 @@ dev.off()  # Close the device
 #Specify order of facet panels in plots
 #desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
 
-all_species_non_endemic <- trending_species %>%
+all_species_non_endemic <- alltime_change %>%
   filter(endemism == "non-endemic") %>%
   mutate(new = case_when(
     decade_change >= 0 ~ "Least Concern",
