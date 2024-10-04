@@ -77,15 +77,14 @@ will need to download this raw data before proceeding with running the cleaning
 code. 
 
 ```{r obs-data-import}
-
 # Raw in-situ (ATRC) Algae data
-algae_raw <- read_csv("ep_m3_2024.csv", 
+algae_raw <- read_csv("ep_m3_2024.parquet", 
                       show_col_types = FALSE)
 
 # RLS/ATRC Method 1 (fish)
 # RLS/ATRC Method 1 (fish)
 fish_raw <- 
-  read_csv("ep_m1_aus_2024.csv", 
+  read_csv("ep_m1_aus_2024.parquet", 
            show_col_types = FALSE) %>% 
   filter(method != 10) %>% #remove seagrass surveys and keep rocky reef records only
   mutate(survey_date = as.Date(survey_date, format = "%d/%m/%Y")) %>%
