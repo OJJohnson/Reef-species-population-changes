@@ -1,1 +1,2 @@
-Analytical computations and outputs for the manuscript by Johnson et al. (in review) "Poorly studied reef species face elevated extinction risk".  All survey data used in this study are publicly available through https://portal.aodn.org.au/. 
+Analytical computations and outputs for the manuscript by Johnson et al. (in review) "Macroalgal and mobile macro-invertebrate reef species face highe extinction risk".  All survey data used in this study are publicly available through https://portal.aodn.org.au/. 
+If you wish to replicate the analysis, please run the R Markdown documents in order of Part 1 - cleaning, Part 2 - modelling, Part 3 - plotting. 
