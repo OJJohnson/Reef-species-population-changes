@@ -1,0 +1,552 @@
+---
+title: "Macroalgal and mobile macro-invertebrate species face high extinction risk - part 3: plotting"
+author: "Olivia J. Johnson, Freddie J. Heather & Camille Mellin"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::downcute:
+  # bookdown::html_document2:
+    code_folding: show
+---
+
+# About this script
+
+The following document provides the R code for the analysis for the paper: Johnson *et al.* (in review.) Macroalgal and mobile macro-invertebrate species face high extinction risk
+
+**\*Corresponding author:**
+[olivia.johsnon\@utas.edu.au](mailto:olivia.johsnon@utas.edu.au){.email}
+
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **R-version**          | 4.4.1 (2024-06-14 ucrt) -- "Race for Your Life"                                                        |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **platform**           | x86_64-w64-mingw32/x64                                                                                   |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Article DOI**        |                                                                                                       |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Article link**       |                                                                                                       |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Article citation**   | Johnson *et al.* (in review.) Macroalgal and mobile macro-invertebrate species face high extinction risk |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Time series**        | 1992 - 2024                                                                                              |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Geographical scale** | Continental Australia                                                                                 |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Code author contact**| olivia.johnson@utas.edu.au                                                                            |
++------------------------+-------------------------------------------------------------------------------------------------------+
+
+# Set-up
+
+```{r knitr-options}
+#| include = FALSE
+
+library(knitr)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# save csv files for each step?
+save_csv <- TRUE
+
+```
+
+# Loading packages
+Load in all required packages for this analysis
+```{r packages}
+
+library(knitr)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(lme4)
+library(lmerTest)
+library(dplyr)
+library(data.table)
+library(zoo, include.only = "na.approx")
+library(ggforce, include.only = "facet_col")
+library(data.table)
+library(vcd)
+
+# "not in" function
+`%!in%` <- Negate(`%in%`)
+```
+
+#Read in summarised results spreadsheet
+```{r - read in data}
+all_time_change <- read_csv("LMM_output.csv")
+```
+
+#Plotting
+Read in csv of LMM results, rate of change from above and the species current 
+IUCN status.This spreadsheet has also filtered out all of the species that 
+produced the 'isSingular' error in the modelling stage. 
+```{r}
+alltime_change <- alltime_change %>%
+  mutate(biogeog = recode(biogeog, 
+                          `cool (temperate)` = "temperate (cool)", 
+                          `warm (temperate)` = "temperate (warm)")) 
+
+#Decade decline plots
+alltime_change$taxon <- factor(alltime_change$taxon, levels = c("Macroalgae", "Invertebrate", "Vertebrate"))
+alltime_change$biogeog <- factor(alltime_change$biogeog, levels = c("temperate (cool)", "temperate (warm)", "tropical"))
+
+
+#Endemic species plot
+# Define the colors used for the `geom_rect` layers
+fill_colors <- c("#cccc33", "yellow", "orange", "red")
+
+endemicdecade <- alltime_change %>%
+  # Combine taxon and biogeog factor conversion into a single mutate call
+  mutate(
+    taxon = case_when(
+      taxon == "Vertebrate" ~ "c) Fishes",
+      taxon == "Invertebrate" ~ "b) Invertebrates",
+      taxon == "Macroalgae" ~ "a) Macroalgae"
+    ),
+    taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes")),
+    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)"))
+  ) %>%
+  # Define a binary for significance (filled vs hollow shapes)
+    sig_filled = if_else(str_detect(sig, "\\*"), "Significant", "Non-significant")
+  ) %>%
+  # Include species with a decline of >= -25% in decade_change
+  filter(decade_change <= -24.9, slope < 0, endemism == "endemic") %>%
+  ggplot(aes(x = decade_change, y = reorder(species_name, -decade_change))) +
+  # Define the background rectangles with xmin and xmax values
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = 0, xmax = -30, fill = "#cccc33") +
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -30, xmax = -50, fill = "yellow") +
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -50, xmax = -80, fill = "orange") +
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = "red") +
+
+  # Add vertical dashed lines
+  geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+
+  # Error bars with the same position nudge as the points
+  geom_errorbarh(aes(xmin = decade_change_lwr, xmax = pmin(decade_change_upr, 0), height = 0.2),
+                 position = position_nudge(y = -0.12)) +
+  
+  # Points with the same position nudge
+  geom_point(aes(shape = biogeog, fill = sig_filled), size = 4, color = "black", stroke = 1, 
+             position = position_nudge(y = -0.12)) +
+  # Add facets for taxa with free y scale and spacing
+  ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
+
+  # Customize shapes for the different biogeographies
+  scale_shape_manual(values = c(
+    "temperate (cool)" = 16,
+    "temperate (warm)" = 17,
+    "tropical" = 15
+  )) +
+
+  # Customize fill for significance (clear for non-significant, black for significant)
+  scale_fill_manual(values = c("Significant" = "black", "Non-significant" = "transparent"), 
+                    labels = c("Non-significant", "Significant"), 
+                    guide = guide_legend(override.aes = list(fill = c("transparent", "black"), shape = 21))) +
+  
+# Axis labels and legend title
+  labs(
+    x = "Rate of decline over a decade",
+    y = "Species Name",
+    shape = "Biogeography",
+    fill = "Significance"
+  ) +
+  
+  # Apply minimal theme and customizations
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    panel.grid.major.y = element_blank(),  # Remove grid lines for y-axis
+    axis.title.y = element_blank(),        # Remove y-axis title
+    axis.text.y = element_text(face = "italic"),  # Italicize species names
+    plot.title = element_text(hjust = 0.5),
+    strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
+  )
+
+plot(endemicdecade)
+
+#Save plot of endemics
+pdf("alltime_change_EndemicsDecade_Final.pdf", width = 8, height = 12)  # Dimensions in inches
+print(endemicdecade)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+
+#####################
+
+
+##########Non-endemic species plot
+
+# Define the colors used for the `geom_rect` layers
+fill_colors <- c("#cccc33", "yellow", "orange", "red")
+
+nonendemicsdecade <- alltime_change %>%
+  # Combine taxon and biogeog factor conversion into a single mutate call
+  mutate(
+    taxon = case_when(
+      taxon == "Vertebrate" ~ "c) Fishes",
+      taxon == "Invertebrate" ~ "b) Invertebrates",
+      taxon == "Macroalgae" ~ "a) Macroalgae"
+    ),
+    taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes")),
+    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)"))
+  ) %>%
+  # Define a binary for significance (filled vs hollow shapes)
+    sig_filled = if_else(str_detect(sig, "\\*"), "Significant", "Non-significant")
+  ) %>%
+  # Include species with a decline of >= -25% in decade_change
+  filter(decade_change <= -24.9, slope < 0, endemism == "non-endemic") %>%
+  ggplot(aes(x = decade_change, y = reorder(species_name, -decade_change))) +
+  # Define the background rectangles with xmin and xmax values
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -0, xmax = -30, fill = fill_colors[1]) +
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -30, xmax = -50, fill = fill_colors[2]) +
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -50, xmax = -80, fill = fill_colors[3]) +
+  geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = fill_colors[4]) +
+
+  # Add vertical dashed lines
+  geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  
+  # Error bars with the same position nudge as the points
+  geom_errorbarh(aes(xmin = decade_change_lwr, xmax = pmin(decade_change_upr, 0), height = 0.2),
+                 position = position_nudge(y = -0.12)) +
+  
+  # Points with the same position nudge
+  geom_point(aes(shape = biogeog, fill = sig_filled), size = 4, color = "black", stroke = 1, 
+             position = position_nudge(y = -0.12)) +
+
+  # Add facets for taxa with free y scale and spacing
+  ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
+
+  # Customize shapes for the different biogeographies
+  scale_shape_manual(values = c(
+    "temperate (cool)" = 16,
+    "temperate (warm)" = 17,
+    "tropical" = 15
+  )) +
+
+  # Customize fill for significance (clear for non-significant, black for significant)
+  scale_fill_manual(values = c("Significant" = "black", "Non-significant" = "transparent"), 
+                    labels = c("Non-significant", "Significant"), 
+                    guide = guide_legend(override.aes = list(fill = c("transparent", "black"), shape = 21))) +
+
+  # Axis labels and legend title
+  labs(
+    x = "Rate of decline over a decade",
+    y = "Species Name",
+    shape = "Biogeography",
+    fill = "Significance"
+  ) +
+  
+  # Apply minimal theme and customizations
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    panel.grid.major.y = element_blank(),  # Remove grid lines for y-axis
+    axis.title.y = element_blank(),        # Remove y-axis title
+    axis.text.y = element_text(face = "italic"),  # Italicize species names
+    plot.title = element_text(hjust = 0.5),
+    strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
+  )
+
+plot(nonendemicsdecade)
+
+#Save plot of non-endemics
+pdf("alltime_change_NonendemicsDecade_Final.pdf", width = 8, height = 12)  # Dimensions in inches
+print(nonendemicsdecade)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+
+```
+
+#IUCN Status versus trend plots
+```{r}
+#Specify order of facet panels in plots
+#desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
+
+#ENDEMICS
+all_species_endemic <- all_species_endemic  %>%
+  count(taxon, IUCN, provisional_status, species_name) %>%
+  mutate(provisional_status = factor(provisional_status, levels = c("Critically Endangered", "Endangered", "Vulnerable", "Near Threatened", "Least Concern", "Lower Risk/conservation dependent"))) %>%
+  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
+                           taxon == "Invertebrate" ~ "b) Invertebrates",
+                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
+  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes"))) %>%
+  ggplot(aes(x = IUCN, y = n, fill = provisional_status)) +
+  geom_col() +
+  facet_wrap(~taxon, ncol = 1,scales = "free_y") + 
+  labs(x = "IUCN Red List Conservation Status",
+       y = "Species Count",
+       fill = "Population trend") +
+  scale_fill_manual(
+        values = c("Critically Endangered" = "red", "Endangered" = "orange", "Vulnerable" = "yellow", "Near Threatened" = "#cccc33", "Least Concern" = "green3"),
+    breaks = c("Critically Endangered", "Endangered", "Vulnerable", "Near Threatened", "Least Concern")) +
+  # scale_x_discrete(limits = c("Not Evaluated", "Data Deficient", "Near Threatened", "Least Concern", "Vulnerable", "Endangered")) +
+  scale_x_discrete(limits = c("Not Evaluated", "Data Deficient", "Least Concern","Near Threatened",  "Vulnerable", "Endangered")) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    legend.position = "right",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    strip.text = element_text(size = 11, hjust = 0),
+    axis.title.y = element_text(margin = margin(r = 20)),
+    strip.text.x = element_text(margin = margin(b = 10)),
+    strip.text.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(r = 40, t = 20))
+  )
+
+
+#Save plot of IUCN endemics
+pdf("alltime_change_EndemicsIUCN_Final.pdf", width = 6, height = 8)  # Dimensions in inches
+print(all_species_endemic)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+
+################################ NON-ENDEMICS #######################################
+
+#NON-ENDEMICS
+#Specify order of facet panels in plots
+#desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
+
+all_species_non_endemic <- all_species_non_endemic %>%
+  count(taxon, IUCN, provisional_status, species_name) %>%
+  mutate(provisional_status = factor(provisional_status, levels = c("Critically Endangered", "Endangered", "Vulnerable", "Near Threatened", "Least Concern", "Lower Risk/conservation dependent"))) %>%
+  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
+                           taxon == "Invertebrate" ~ "b) Invertebrates",
+                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
+  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes"))) %>%
+  ggplot(aes(x = IUCN, y = n, fill = provisional_status)) +
+  geom_col() +
+  facet_wrap(~taxon, ncol = 1,scales = "free_y") + 
+  labs(x = "IUCN Red List Conservation Status",
+       y = "Species Count",
+       fill = "Population trend") +
+  scale_fill_manual(
+    values = c("Critically Endangered" = "red", "Endangered" = "orange", "Vulnerable" = "yellow", "Near Threatened" = "#cccc33", "Least Concern" = "green3"),
+    breaks = c("Critically Endangered", "Endangered", "Vulnerable", "Near Threatened", "Least Concern")) +
+  # scale_x_discrete(limits = c("Not Evaluated", "Lower Risk/conservation dependent", "Data Deficient", "Least Concern", "Near Threatened", "Vulnerable", "Endangered")) +
+  scale_x_discrete(limits = c("Not Evaluated", "Least Concern", "Near Threatened", "Vulnerable", "Endangered")) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    legend.position = "right",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    strip.text = element_text(size = 11, hjust = 0),
+    axis.title.y = element_text(margin = margin(r = 20)),
+    strip.text.x = element_text(margin = margin(b = 10)),
+    strip.text.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(r = 40, t = 20))
+  )
+
+#Save plot of IUCN endemics
+pdf("alltime_change_NonendemicsIUCN_Final.pdf", width = 6, height = 8)  # Dimensions in inches
+print(all_species_non_endemic)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+```
+
+
+#Date of assessment
+```{r - bar plot of evaluation dates}
+
+yearassessed <- alltime_change %>%
+  select(species_name, IUCN, date_assessed) %>%
+  mutate(year_assessed = case_when(
+    date_assessed == "Not Evaluated" ~ "Not Evaluated",  # Assign "Not Evaluated" if date_assessed is "Not Evaluated"
+    !is.na(date_assessed) & date_assessed != "" ~ {
+      parsed_date <- parse_date_time(date_assessed, orders = c("dmy", "mdy"), quiet = TRUE)
+      as.character(year(parsed_date))  # Extract the year and convert to character
+    },
+    TRUE ~ "Not Evaluated"  # Assign "Not Evaluated" for all other NA cases
+  ))
+
+#Summarise the number of IUCN assessments in a given year
+yearassessed <- yearassessed %>%
+  group_by(year_assessed) %>%             
+  summarise(total_species = n(),           
+            .groups = 'drop') 
+
+
+# Create the bar plot with minimal theme and black fill
+yearassessed_plot <- ggplot(yearassessed, aes(x = factor(year_assessed, levels = unique(year_assessed)), y = total_species)) +
+  geom_bar(stat = "identity", fill = "black", color = "black", width = 0.8) +
+  labs(x = "Assessment Year",
+       y = "Number of Assessments") +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+    axis.title = element_text(face = "bold", size = 12),  # Adjust size here
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    plot.background = element_blank(),
+    axis.line = element_line(color = "black") 
+  ) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_discrete(expand = c(0, 0))
+
+pdf("Year_assessed.pdf", width = 9, height = 10)  # Dimensions in inches
+print(yearassessed_plot)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+
+
+#There are 342 species "Not Evaluated" - 47% of common shallow reef species not assessed on the IUCN
+```
+
+
+#Produce map of sites where all data is available from around Australia
+#MAP
+```{r packages for mapping}
+library(dplyr)  
+library(ggplot2)
+library(ggspatial)
+library(ozmaps)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(rnaturalearthhires)
+library(ggspatial)
+library(tidyr)
+```
+
+```{r - read in data}
+#Algae
+algae_mappingsites <- read_csv("algae_mappingsites_2024.csv")
+
+#Fish
+fish_mappingsites <- read_csv("fish_mappingsites_2024.csv")
+
+#Inverts
+inverts_mappingsites <- read_csv("inverts_mappingsites_2024.csv")
+
+#Coral
+coral_mappingsites <- read_csv("coral_mappingsites_2024.csv")
+
+```
+
+```{r - themes}
+theme_set(theme_bw())
+world <- ne_countries(scale = "medium", returnclass = "sf")
+class(world)
+```
+
+#Determine latitude and longitude points
+```{r - determine lats and longs - Clean}
+#algae
+algae_lats_longs_clean <- algae_mappingsites  %>%
+  select(latitude, longitude, site_code, species_name)
+
+#fish
+fish_lats_longs_clean <- fish_mappingsites %>%
+  select(latitude, longitude, site_code, species_name)
+
+#inverts
+inverts_lats_longs_clean <- inverts_mappingsites %>%
+  select(latitude, longitude, site_code, species_name)
+
+#coral
+coral_lats_longs_clean <- coral_mappingsites %>%
+  select(latitude, longitude, site_code, species_name)
+
+# Combine latitude and longitude tables for algae, fish, inverts, and coral
+all_lats_longs_clean <- bind_rows(algae_lats_longs_clean, fish_lats_longs_clean, inverts_lats_longs_clean, coral_lats_longs_clean) %>%
+  select(latitude, longitude)
+
+#Remove duplicates
+all_lats_longs_clean <- all_lats_longs_clean %>%
+  select(latitude, longitude) %>%
+  distinct()
+
+all_lats_longs_clean <- all_lats_longs_clean[!duplicated(all_lats_longs_clean[, c("latitude", "longitude")]), ]
+```
+
+#Produce map
+```{r - lats and long code for map}
+#RAW data map
+coordinates <- all_lats_longs_clean #(above)
+
+#coordinates (869 sites) used in analysis
+coords_from_analysis_sites <- read_csv("filtered_site_coords_nov.csv")
+
+#how many sites in total are on this map?
+unique_species_count <- length(unique(coordinates$latitude))
+unique_species_count #2652 sites
+
+# Load world and Australian states data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+oz_states <- ne_states(country = "Australia", returnclass = "sf")
+
+#read in covariates
+covariates <- read_csv("covariates_final.csv")
+
+# Select relevant columns from covariates
+covariates_selected <- covariates %>%
+  select(Latitude, Longitude, temperature_mean_2020) %>%
+  rename(latitude= Latitude, longitude = Longitude)
+
+# Merge coordinates with temperature data
+merged_data <- coordinates %>%
+  left_join(covariates_selected, by = c("latitude", "longitude"))
+
+# Assign temperature categories
+merged_data <- merged_data %>%
+  mutate(temperature_category = case_when(
+    temperature_mean_2020 < 17.5 ~ "temperate (cool)",
+    temperature_mean_2020 >= 17.5 & temperature_mean_2020 < 23 ~ "temperate (warm)",
+    temperature_mean_2020 >= 23 ~ "tropical",
+    TRUE ~ NA_character_  # Set to NA instead of "Unknown"
+  ))
+
+# Fill down the temperature categories for NAs
+merged_data <- merged_data %>%
+  arrange(latitude, longitude) %>%  # Ensure data is sorted by lat/long
+  fill(temperature_category, .direction = "down")
+
+# Optionally, replace the remaining NAs with "Unknown"
+merged_data <- merged_data %>%
+  mutate(temperature_category = ifelse(is.na(temperature_category), "Unknown", temperature_category))
+
+#re-order key
+merged_data$temperature_category <- factor(merged_data$temperature_category, 
+                                            levels = c("tropical", 
+                                                       "temperate (warm)", 
+                                                       "temperate (cool)"))
+# #remove the duplicate TAS145 site
+# merged_data <- merged_data[-1, ]
+
+# Create the map
+  map <- ggplot() +
+  geom_sf(data = world, fill = "gray90", color = "gray50") +
+  geom_sf(data = oz_states, fill = "gray90", color = "gray50") +
+  geom_point(data = all_lats_longs_clean, 
+             aes(x = longitude, y = latitude), 
+             shape = 21, size = 1.8, fill = NA, color = "black") +  # Hollow points
+  geom_point(data = coords_from_analysis_sites, 
+             aes(x = longitude, y = latitude, fill = temperature_category), 
+             size = 1.8, alpha = 0.9, shape = 21, color = "grey10") +  # Black borders
+  scale_fill_manual(values = c("temperate (cool)" = "dodgerblue2", 
+                               "temperate (warm)" = "darkgoldenrod1", 
+                               "tropical" = "firebrick2")) +  # Fill colors
+  xlab("Longitude") + 
+  ylab("Latitude") +
+  coord_sf(xlim = c(110.00, 160.00), ylim = c(-45.00, -8.00), expand = FALSE) +
+  annotation_scale(location = "bl", width_hint = 0.3) +
+  annotation_north_arrow(location = "bl", which_north = "true",
+                         pad_x = unit(0.1, "in"), pad_y = unit(0.3, "in"),
+                         style = north_arrow_fancy_orienteering) +
+  labs(fill = "Biogeography") +  # Legend title for fill colors
+  guides(fill = guide_legend(override.aes = list(size = 4))) +  # Larger legend points
+  theme_minimal(base_size = 8) +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size = 7),
+        axis.title = element_text(size = 9))
+
+# Print the map
+print(map)
+
+pdf("Final_map.pdf", width = 10, height = 7)  # Dimensions in inches
+print(map)  # Replace 'map' with your plot object
+dev.off()  # Close the device
+```

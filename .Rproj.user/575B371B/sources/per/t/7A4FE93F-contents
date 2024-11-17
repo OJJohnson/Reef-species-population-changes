@@ -1,5 +1,5 @@
 ---
-title: "Poorly studied reef species face elevated extinction risk"
+title: "Macroalgal and mobile macro-invertebrate species face high extinction risk - part 1: cleaning"
 author: "Olivia J. Johnson, Freddie J. Heather & Camille Mellin"
 date: "`r Sys.Date()`"
 output: 
@@ -10,7 +10,7 @@ output:
 
 # About this script
 
-The following document provides the R code for the analysis for the paper: Johnson *et al.* (in review.) Poorly studied reef species face elevated extinction risk.
+The following document provides the R code for the analysis for the paper: Johnson *et al.* (in review.) Macroalgal and mobile macro-invertebrate species face high extinction risk
 
 **\*Corresponding author:**
 [olivia.johsnon\@utas.edu.au](mailto:olivia.johsnon@utas.edu.au){.email}
@@ -24,7 +24,7 @@ The following document provides the R code for the analysis for the paper: Johns
 +------------------------+-------------------------------------------------------------------------------------------------------+
 | **Article link**       |                                                                                                       |
 +------------------------+-------------------------------------------------------------------------------------------------------+
-| **Article citation**   | Johnson *et al.* (in review.) Poorly studied reef species face elevated extinction risk warming. |
+| **Article citation**   | Johnson *et al.* (in review.) Macroalgal and mobile macro-invertebrate species face high extinction risk |
 +------------------------+-------------------------------------------------------------------------------------------------------+
 | **Time series**        | 1992 - 2024                                                                                              |
 +------------------------+-------------------------------------------------------------------------------------------------------+
@@ -64,6 +64,7 @@ library(dplyr)
 library(data.table)
 library(zoo, include.only = "na.approx")
 library(ggforce, include.only = "facet_col")
+library(data.table)
 
 # "not in" function
 `%!in%` <- Negate(`%in%`)
@@ -77,14 +78,15 @@ will need to download this raw data before proceeding with running the cleaning
 code. 
 
 ```{r obs-data-import}
+
 # Raw in-situ (ATRC) Algae data
-algae_raw <- read_csv("ep_m3_2024.parquet", 
+algae_raw <- read_csv("ep_m3_2024.csv", 
                       show_col_types = FALSE)
 
 # RLS/ATRC Method 1 (fish)
 # RLS/ATRC Method 1 (fish)
 fish_raw <- 
-  read_csv("ep_m1_aus_2024.parquet", 
+  read_csv("ep_m1_aus_2024.csv", 
            show_col_types = FALSE) %>% 
   filter(method != 10) %>% #remove seagrass surveys and keep rocky reef records only
   mutate(survey_date = as.Date(survey_date, format = "%d/%m/%Y")) %>%
@@ -183,8 +185,7 @@ algae_rmspp <-
                        "Rhodophyta",
                        "Chlorophyta",
                        "Tracheophyta",
-                       "Ochrophyta"
-  )) %>% 
+                       "Ochrophyta")) %>% 
   filter(str_detect(species_name, "[A-Z]{1}[a-z]+\\s{1}[a-z]+$")) %>% 
   filter(!str_detect(species_name, "Unidentified")) %>% 
   filter(!str_detect(species_name, "\\[")) %>% 
@@ -402,6 +403,7 @@ algae_bysurv <- algae_bysurv %>%
   left_join(nsurveys_bysiteyear) %>% 
   mutate(cover_bysiteyr = av_percentcover_site/nsurveys_bysiteyr)
 
+
 ```
 
 ### Dealing with NAs
@@ -473,12 +475,13 @@ min_density <-
   algae_data_addingzeros %>%
   filter(cover_bysiteyr > 0) %>%
   summarise(minN = min(cover_bysiteyr), 
-            .by = c(site_code, species_name)) 
+            .by = c(species_name)) #change this from site_code and species_name to just species_name 
+                                  #This is then the minimum value for the species overall and not just at a site level
 
 # Join the min_density table to the main species count table
 algae_data_with_minN <- 
   algae_data_addingzeros %>%
-  left_join(min_density, by = c("site_code", "species_name")) %>% 
+  left_join(min_density, by = c("species_name")) %>% 
   mutate(site_yr = paste(site_code, survey_year, sep = "_"))
 
 # #export a data sheet here for mapping sites later on
@@ -495,10 +498,11 @@ algae_data <-
   mutate(n_sites_byspp = n(), 
          .by = c(site_code, species_name)) %>% 
   mutate(n_obs_byspp = n(), .by = c(species_name)) %>% 
-  mutate(log_cover = log10(cover_bysiteyr + minN/2)) %>%  # Use minN for log transformation
-  filter(n_sites_byspp >= 5) %>% # n_sites_byspp = number of years in site*spp combination  
-  filter(n_distinct(site_code) >= 20, # number of unique sites per spp
+  mutate(log_cover = log10(cover_bysiteyr + minN)) %>%  # Use minN for log transformation
+  filter(n_sites_byspp >= 4) %>% # n_sites_byspp = number of years in site*spp combination  
+  filter(n_distinct(site_code) >= 30, # number of unique sites per spp
          .by = species_name) 
+
 
 ```
 
@@ -528,16 +532,29 @@ fish_combined <-
          survey_year = year(survey_date)) %>%
   mutate(transects_persiteyr = n_distinct(survey_id), .by = c(site_code, survey_year))
 
-#To ensure a species isn't having a double count when combining M1 and M2 data, take the highest average density for that species at a transect level
-fish_combined <- fish_combined %>%
-  group_by(survey_id, species_name) %>%
-  filter(abundance_per50 == max(abundance_per50)) %>%
+# Step 1: Group by species and method, then calculate the mean abundance (N)
+mean_abundance_by_method <- fish_combined %>%
+  group_by(species_name, method) %>%
+  summarise(mean_N = mean(abundance_per50, na.rm = TRUE), .groups = 'drop')
+
+# Step 2: For each species, identify which method has the highest mean abundance
+best_method_per_species <- mean_abundance_by_method %>%
+  group_by(species_name) %>%
+  filter(mean_N == max(mean_N)) %>%
   ungroup()
+
+# Step 3: Filter the original dataset to keep only the records of the best method per species
+filtered_fish_combined <- fish_combined %>% 
+  left_join(best_method_per_species, by = c("species_name", "method")) %>% 
+  filter(!is.na(mean_N))
+
+#rename to continue with code below:
+fish_combined <- filtered_fish_combined
 
 # remove incorrectly named species
 fish_filtered <- 
   fish_combined %>%
-  filter(phylum %in% c("Chordata")) %>% 
+  filter(phylum == "Chordata") %>% 
   filter(class %in% c("Actinopterygii",
                       "Elasmobranchii",
                       "Teleostei",
@@ -552,7 +569,8 @@ fish_filtered <-
   mutate(species_name = case_when(species_name == "Apogon victoriae" ~ "Ostorhinchus victoriae", TRUE ~ species_name)) %>%
   mutate(species_name = case_when(species_name == "Apogon limenus" ~ "Ostorhinchus limenus", TRUE ~ species_name)) %>%
   mutate(species_name = case_when(species_name == "Stegastes fasciolatus" ~ "Plectroglyphidodon fasciolatus", TRUE ~ species_name)) %>%
-  mutate(species_name = case_when(species_name == "Cetoscarus bicolor" ~ "Cetoscarus ocellatus", TRUE ~ species_name))
+  mutate(species_name = case_when(species_name == "Cetoscarus bicolor" ~ "Cetoscarus ocellatus", TRUE ~ species_name)) %>%
+  mutate(species_name = case_when(species_name == "Amphiprion akindynos" ~ "Amphiprion mccullochi", TRUE ~ species_name))
 ```
 
 ### Cleaning counts
@@ -672,12 +690,12 @@ min_density <-
   avspp_persiteyr %>%
   filter(avspp_persiteyr > 0) %>%
   summarise(minN = min(avspp_persiteyr), 
-            .by = c(site_code, species_name)) 
+            .by = c(species_name)) 
 
 # Join the min_density table to the main species count table
 fish_data_with_minN <- 
   avspp_persiteyr %>%
-  left_join(min_density, by = c("site_code", "species_name")) %>% 
+  left_join(min_density, by = c("species_name")) %>% 
   mutate(site_yr = paste(site_code, survey_year, sep = "_"))
 
 # export a data sheet here for mapping sites later on
@@ -695,13 +713,13 @@ fish_data <-
   mutate(grid_cell = paste(latitude, longitude)) %>% #create a grid cell column
   mutate(latitude = round(latitude),
          longitude = round(longitude), 
-         log_count = log10(avspp_persiteyr + minN/2)) %>%  # Use minN for log transformation
+         log_count = log10(avspp_persiteyr + minN)) %>%  # Use minN for log transformation
   mutate(year = substr(site_yr, nchar(site_yr) - 3, nchar(site_yr)) %>% 
            as.numeric(),
          site_code = substr(site_yr, 1, nchar(site_yr) - 5)) %>% 
   add_count(site_code, species_name, name = "n_site_species") %>% 
-  filter(n_site_species >= 5) %>% # n_sites_byspp = number of years in site*spp combination - minimum of 3, GE has suggested 10
-  filter(n_distinct(site_code) >= 20, # number of unique sites per spp
+  filter(n_site_species >= 4) %>% # n_sites_byspp = number of years in site*spp combination - minimum of 3, GE has suggested 10
+  filter(n_distinct(site_code) >= 30, # number of unique sites per spp
          .by = species_name)
 
 ```
@@ -718,13 +736,6 @@ before any modelling occurs.
 
 ```{r}
 sum(is.na(inverts_raw$total))
-
-# Total number of M2 inverts being considered: 1400
-# invert_num_species <- 
-#   inverts_raw %>%
-#   distinct(species_name) %>%
-#   nrow()
-# print(invert_num_species)
 
 #first let's check what "Phylum" groups are contained in the "invertebrate raw" dataframe
 inverts_raw %>% 
@@ -754,7 +765,8 @@ inverts_clean <-
                               "Tropiometra afra",
                               "Pecten fumatus",
                               "Tripneustes australiae", 
-                              "Tripneustes gratilla")) %>% #remove the Tripneustes genus - name changes/inconsistent records for study
+                              "Tripneustes gratilla", #remove the Tripneustes genus - name changes/inconsistent records for study
+                              "Phyllacanthus irregularis")) %>% #remove due to inconsistent counts by divers over time 
   dplyr::select(
     survey_id,
     site_code,
@@ -949,19 +961,6 @@ inverts_clean <- inverts_clean %>%
 #   distinct(location)
 
 
-# #Total number of M2 species being considered after filtering: 1066
-# inverts_num_species_2 <- 
-#   inverts_clean %>%
-#   distinct(species_name) %>%
-#   nrow()
-# print(inverts_num_species_2)
-
-# #view list of M2 species
-# inverts_species_list <- 
-#   inverts_clean %>% 
-#   distinct(species_name) %>% 
-#   pull(species_name)
-
 #Inverts additional information for later
 inverts_survey_list <- 
   inverts_clean %>% 
@@ -1080,12 +1079,12 @@ min_density_inverts <-
   avspp_persiteyr_inverts %>%
   filter(avspp_persiteyr > 0) %>%
   summarise(minN = min(avspp_persiteyr), 
-            .by = c(site_code, species_name)) 
+            .by = c(species_name)) 
 
 # Join the min_density table to the main species count table
 inverts_data_with_minN <- 
   avspp_persiteyr_inverts %>%
-  left_join(min_density_inverts, by = c("site_code", "species_name")) %>% 
+  left_join(min_density_inverts, by = c("species_name")) %>% 
   mutate(site_yr = paste(site_code, survey_year, sep = "_"))
 
 # #export a data sheet here for mapping sites later on
@@ -1102,17 +1101,14 @@ inverts_data <-
   mutate(grid_cell = paste(latitude, longitude)) %>%  #grid cell column
   mutate(latitude = round(latitude),
          longitude = round(longitude), 
-         log_count = log10(avspp_persiteyr + minN/2)) %>%  # Use minN for log transformation
+         log_count = log10(avspp_persiteyr + minN)) %>%  # Use minN for log transformation
   mutate(year = substr(site_yr, nchar(site_yr) - 3, nchar(site_yr)) %>% 
            as.numeric(),
          site_code = substr(site_yr, 1, nchar(site_yr) - 5)) %>% 
   add_count(site_code, species_name, name = "n_site_species") %>% 
-  filter(n_site_species >= 5) %>% # n_sites_byspp = number of years in site*spp combination
-  filter(n_distinct(site_code) >= 20, # number of unique sites per spp
+  filter(n_site_species >= 4) %>% # n_sites_byspp = number of years in site*spp combination
+  filter(n_distinct(site_code) >= 30, # number of unique sites per spp
          .by = species_name)
-
-
-################# END ####################
 
 ```
 
@@ -1125,10 +1121,6 @@ taxonomic expert, resulting in a coral percentage cover obtained through
 analysis via a specialised program Squiddle+, a quincunx grid of 5
 points was overlaid on each image and corals under each point were
 recorded; thus, taxa under 100 points per transect are cataloged.
-
-Observations that are only to species level have been used for this
-analysis. Photoquadrat coral data was only scored to species level from 2009                                                              
-onward.
 
 ### Cleaning counts
 
@@ -1200,7 +1192,6 @@ coral_lat_lons <-
   summarise(latitude = mean(latitude), 
             longitude = mean(longitude), 
             .by = site_code)
-
 ```
 
 ### Dealing with NAs
@@ -1269,12 +1260,12 @@ min_density <-
   coral_data_addingzeros %>%
   filter(final_percent_cover > 0) %>%
   summarise(minN = min(final_percent_cover), 
-            .by = c(site_code, species_name)) 
+            .by = c(species_name)) 
 
 # Join the min_density table to the main species count table
 coral_data_with_minN <- 
   coral_data_addingzeros %>%
-  left_join(min_density, by = c("site_code", "species_name")) %>% 
+  left_join(min_density, by = c("species_name")) %>% 
   mutate(site_yr = paste(site_code, survey_year, sep = "_"))
 
 # #export a data sheet here for mapping sites later on
@@ -1291,11 +1282,10 @@ coral_data <-
   mutate(n_sites_byspp = n(), 
          .by = c(site_code, species_name)) %>% 
   mutate(n_obs_byspp = n(), .by = c(species_name)) %>% 
-  mutate(log_cover = log10(final_percent_cover + minN/2)) %>%  # Use minN for log transformation
-  filter(n_sites_byspp >= 5) %>% # n_sites_byspp = number of years in site*spp combination  
-  filter(n_distinct(site_code) >= 20, # number of unique sites per spp
+  mutate(log_cover = log10(final_percent_cover + minN)) %>%  # Use minN for log transformation
+  filter(n_sites_byspp >= 4) %>% # n_sites_byspp = number of years in site*spp combination  
+  filter(n_distinct(site_code) >= 30, # number of unique sites per spp
          .by = species_name) 
-
 ```
 
 #Export all clean data files that will be used for modelling 
@@ -1317,1285 +1307,3 @@ coral_data <-
 # write.csv(coral_data, file_name, row.names = FALSE)
 
 ```
-
-# Modelling and plots
-The second half of this analysis runs a series of Linear Mixed Effects models to
-understand population trends of reef species around continental Australia from
-1992 - 2024, and then produce the plots as per those seen in the manuscript by
-Johnson et al. (in review)
-
-# Data import
-Read in the cleanly produced data files that were created in the chunks above. 
-```{r - read in all tidied csv files}
-algae_data <- read_csv("algae_data_2024.csv", show_col_types = FALSE)
-
-fish_data <- read_csv("fish_data_2024.csv", show_col_types = FALSE)
-
-inverts_data <- read_csv("inverts_data_2024.csv", show_col_types = FALSE)
-
-coral_data <- read_csv("coral_data_2024.csv", show_col_types = FALSE)
-```
-
-## Covariate data
-Read in further data covariate data that will be required
-```{r covariate-data-import}
-# #Species-level information
-# species_tbl <- 
-#   read_csv(file = "species_info.csv", 
-#            show_col_types = FALSE, 
-#            skip_empty_rows = TRUE) 
-# 
-# #Temperature time-series (post-2008) data for each site
-# temperature_raw <- 
-#   read_csv(file =  "temperature_timeseries.csv",
-#            show_col_types = FALSE, 
-#            skip_empty_rows = TRUE)
-# 
-# #Endemism dataframe
-# endemism <- 
-#   read_csv(file =  "endemism.csv",
-#            show_col_types = FALSE, 
-#            skip_empty_rows = TRUE)
-```
-
-# Linear mixed effects models
-Below, I will perform a series of linear mixed-effects models on the
-data above that has been cleaned. Each major group will be analysed
-separately (algae, fish, inverts and coral) and a loop performed on the
-model so that each individual species has their trends over time
-analysed.
-
-Filter parameters set above are the bare minimum that are required in
-order to fit a linear line and therefore perform the linear
-mixed-effects models on the data.
-
-All models appear to run, but there are some warnings at the end of the
-loop. Where issues arise in the modelling including the "isSingular"
-error, indicating convergence when the model runs and within the data
-for the species the model is being performed. The individual species
-that are having this error are then inspected, and in some instances has
-been randomly plotted to see (if there are any obvious signs) what may
-be causing convergence. If it appears that it is limited data to
-effectively perform the model, the model loop is re-run, with a flag to
-remove any species that are having the "singular fit" error when the
-loop is performed.
-
-The table output is the list of species that has had their trends over
-time analysed and the major result values needed to understand the
-trends put into a table (slope, intercept, p-value, and significance of
-the trend).
-
-## Algae LMM
-```{r - algae 1992 - 2023}
-
-result_algae <- tibble(
-  species_name = character(),
-  slope = numeric(),
-  intercept = numeric(),
-  intercept1990 = numeric(),
-  intercept1991 = numeric(),
-  p_value = numeric(),
-  ci_low_intercept = numeric(),
-  ci_high_intercept = numeric(),
-  ci_low_slope = numeric(),
-  ci_high_slope = numeric(),
-  se = numeric(),
-  sd_residuals = numeric(),
-  aic = numeric(),
-  bic = numeric(),
-  error_flag = character()  #column to track the error flag
-) 
-
-for (i in unique(algae_data$species_name)) {
-  
-  mod_data_algae <- 
-    algae_data %>% 
-    filter(species_name == i)
-
-# Check the number of unique levels of site_code for each species_name
-  unique_levels <- n_distinct(algae_data$site_code)
-
-  if (unique_levels <= 1) {
-    warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
-    next  # Skip to the next iteration
-  }    
-    
-  tryCatch({
-    
-    algae_model <- 
-    lmerTest::lmer(log_cover ~ survey_year + (1|site_code), 
-                   data = mod_data_algae) 
-  
-    intercept <- lme4::fixef(algae_model)[1] %>% as.numeric()
-    slope <- lme4::fixef(algae_model)[2] %>% as.numeric()
-  
-  #Determine the reference year from the data = 1992
-  reference_year <- min(mod_data_algae$survey_year)
-    
-  #Calculate intercept at year 1990 & 1991
-  intercept1990 <- intercept + slope * (1990 - reference_year)
-  intercept1991 <- intercept + slope * (1991 - reference_year)
-  
-  # Check if the model has a singular fit
-  if (isSingular(algae_model)) {
-    error_flag <- "Singular Fit"  # Set the error flag
-  } else {
-    error_flag <- ""  # No error flag
-    
-    # Extracting p-value
-    p_value <- summary(algae_model)$coefficients[2, "Pr(>|t|)"]
-    
-   ci <- confint(algae_model, method = "Wald")
-    
-    ci_low_intercept <- ci["(Intercept)", 1]
-    ci_high_intercept <- ci["(Intercept)", 2]
-    ci_low_slope <- ci["survey_year", 1]
-    ci_high_slope <- ci["survey_year", 2]
-    
-    se <- summary(algae_model)$coefficients[2, "Std. Error"]
-    sd_residuals <- summary(algae_model)$sigma
-    aic <- AIC(algae_model)
-    bic <- BIC(algae_model)
-    
-    # Extract residuals
-    residuals <- residuals(algae_model)
-    
-  }
-  
-  output <- summary(object = algae_model)
-  
-  result_algae <- 
-    result_algae %>% 
-    add_row(species_name = i, 
-            slope = slope, 
-            intercept = intercept, 
-            intercept1990 = intercept1990, 
-            intercept1991 = intercept1991,
-            p_value = p_value, 
-            ci_low_intercept = ci_low_intercept, 
-            ci_high_intercept = ci_high_intercept, 
-            ci_low_slope = ci_low_slope,
-            ci_high_slope = ci_high_slope,  
-            se = se, 
-            sd_residuals = sd_residuals,
-            aic = aic,
-            bic = bic,
-            error_flag = error_flag) %>%
-    mutate(sig = case_when(p_value <= 0.001 ~ "***",
-                           p_value <= 0.01  ~ "**",
-                           p_value <= 0.05  ~ "*",
-                           TRUE ~ ""))   }, error = function(e) {
-    cat("Error occurred for species:", i, "\n")
-    cat("Error message:", conditionMessage(e), "\n")
-  })
-
-}
-
-#Determining % change (1992 - 2023)
-result_algae <- result_algae %>% 
-  mutate(y_1992 = 10^(intercept+(slope*1992)), 
-         y_2023 = 10^(intercept+(slope*2023)), 
-         y_1992_lwr = 10^(intercept+(ci_low_slope*1992)), 
-         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
-         y_1992_upr = 10^(intercept+(ci_high_slope*1992)), 
-         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
-         ) %>% 
-  mutate(difference = (y_2023-y_1992), 
-         difference_lwr = y_2023_lwr-y_1992_lwr, 
-         difference_upr = y_2023_upr-y_1992_upr) %>% 
-  mutate(thirtyyear_change = (difference/y_1992)*100,
-         thirtyyear_change_lwr = (difference_lwr/y_1992_lwr)*100,
-         thirtyyear_change_upr = (difference_upr/y_1992_upr)*100)
-
-#Determining % change (decade change)
-result_algae <- result_algae %>% 
-  mutate(y_2013 = 10^(intercept+(slope*2013)), 
-         y_2023 = 10^(intercept+(slope*2023)), 
-         y_2013_lwr = 10^(intercept+(ci_low_slope*2013)), 
-         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
-         y_2013_upr = 10^(intercept+(ci_high_slope*2013)), 
-         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
-         ) %>% 
-  mutate(diff = (y_2023-y_2013), 
-         diff_lwr = y_2023_lwr-y_2013_lwr, 
-         diff_upr = y_2023_upr-y_2013_upr) %>% 
-  mutate(decade_change = (diff/y_2013)*100,
-         decade_change_lwr = (diff_lwr/y_2013_lwr)*100,
-         decade_change_upr = (diff_upr/y_2013_upr)*100)
-
-```
-
-## Fish LMM
-```{r - year range 1992 - 2024}
-
-result_fish <- tibble(
-  species_name = character(),
-  slope = numeric(),
-  intercept = numeric(),
-  intercept1990 = numeric(),
-  intercept1991 = numeric(),
-  p_value = numeric(),
-  ci_low_intercept = numeric(),
-  ci_high_intercept = numeric(),
-  ci_low_slope = numeric(),
-  ci_high_slope = numeric(),
-  se = numeric(),
-  sd_residuals = numeric(),
-  aic = numeric(),
-  bic = numeric(),
-  error_flag = character()  # New column to track the error flag
-) 
-
-
-for (i in unique(fish_data$species_name)) {
-  
-  mod_data_fish <- 
-    fish_data %>% filter(species_name == i)
-
-# Check the number of unique levels of site_code for each species_name
-  unique_levels <- n_distinct(mod_data_fish$site_code)
-
-
-  if (unique_levels <= 1) {
-    warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
-    next  # Skip to the next iteration
-  }
-  
-  tryCatch({fish_model <- 
-    lmerTest::lmer(log_count ~ year + (1|site_code), data = mod_data_fish) 
-  
-  intercept <- lme4::fixef(fish_model)[1] %>% as.numeric()
-  slope <- lme4::fixef(fish_model)[2] %>% as.numeric()
-  
-  #Determine the reference year from the data = 1992
-  reference_year <- min(mod_data_fish$survey_year)
-    
-  #Calculate intercept at year 1990 & 1991
-  intercept1990 <- intercept + slope * (1990 - reference_year)
-  intercept1991 <- intercept + slope * (1991 - reference_year)
-  
-  # Check if the model has a singular fit
-  if (isSingular(fish_model)) {
-    error_flag <- "Singular Fit"  # Set the error flag
-  } else {
-    error_flag <- ""  # No error flag
-    # Extracting p-value
-    p_value <- summary(fish_model)$coefficients[2, "Pr(>|t|)"]
-    
-    ci <- confint(fish_model, method = "Wald")
-    
-    ci_low_intercept <- ci["(Intercept)", 1]
-    ci_high_intercept <- ci["(Intercept)", 2]
-    ci_low_slope <- ci["year", 1]
-    ci_high_slope <- ci["year", 2]
-    
-    se <- summary(fish_model)$coefficients[2, "Std. Error"]
-    sd_residuals <- summary(fish_model)$sigma
-    aic <- AIC(fish_model)
-    bic <- BIC(fish_model)
-  }
-  
-  output <- summary(object = fish_model)
-  
-  result_fish <- result_fish %>% 
-    add_row(species_name = i, 
-            slope = slope, 
-            intercept = intercept,
-            intercept1990 = intercept1990,
-            intercept1991 = intercept1991,
-            p_value = p_value, 
-            ci_low_intercept = ci_low_intercept, 
-            ci_high_intercept = ci_high_intercept, 
-            ci_low_slope = ci_low_slope,
-            ci_high_slope = ci_high_slope, 
-            se = se, 
-            sd_residuals = sd_residuals,
-            aic = aic,
-            bic = bic,
-            error_flag = error_flag) %>%
-    mutate(sig = case_when(p_value <= 0.001 ~ "***",
-                           p_value <= 0.01  ~ "**",
-                           p_value <= 0.05  ~ "*",
-                           TRUE ~ ""))  }, error = function(e) {
-    cat("Error occurred for species:", i, "\n")
-    cat("Error message:", conditionMessage(e), "\n")
-  })
-  
-  #print(summary(fish_model))
-  
-}
-
-
-#Determining % change (1992 - 2024)
-result_fish <- result_fish %>% 
-  mutate(y_1992 = 10^(intercept+(slope*1992)), 
-         y_2024 = 10^(intercept+(slope*2024)), 
-         y_1992_lwr = 10^(intercept+(ci_low_slope*1992)), 
-         y_2024_lwr = 10^(intercept+(ci_low_slope*2024)),
-         y_1992_upr = 10^(intercept+(ci_high_slope*1992)), 
-         y_2024_upr = 10^(intercept+(ci_high_slope*2024))
-         ) %>% 
-  mutate(difference = (y_2024-y_1992), 
-         difference_lwr = y_2024_lwr-y_1992_lwr, 
-         difference_upr = y_2024_upr-y_1992_upr) %>% 
-  mutate(thirtyyear_change = (difference/y_1992)*100,
-         thirtyyear_change_lwr = (difference_lwr/y_1992_lwr)*100,
-         thirtyyear_change_upr = (difference_upr/y_1992_upr)*100)
-
-#Determining % change (decade change)
-result_fish <- result_fish %>% 
-  mutate(y_2013 = 10^(intercept+(slope*2013)), 
-         y_2023 = 10^(intercept+(slope*2023)), 
-         y_2013_lwr = 10^(intercept+(ci_low_slope*2013)), 
-         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
-         y_2013_upr = 10^(intercept+(ci_high_slope*2013)), 
-         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
-         ) %>% 
-  mutate(diff = (y_2023-y_2013), 
-         diff_lwr = y_2023_lwr-y_2013_lwr, 
-         diff_upr = y_2023_upr-y_2013_upr) %>% 
-  mutate(decade_change = (diff/y_2013)*100,
-         decade_change_lwr = (diff_lwr/y_2013_lwr)*100,
-         decade_change_upr = (diff_upr/y_2013_upr)*100)
-
-```
-
-## Mobile macro-invertebrates LMM
-```{r year range 1992 - 2024}
-
-result_inverts <- tibble(
-  species_name = character(),
-  slope = numeric(),
-  intercept = numeric(),
-  intercept1990 = numeric(),
-  intercept1991 = numeric(),
-  p_value = numeric(),
-  ci_low_intercept = numeric(),
-  ci_high_intercept = numeric(),
-  ci_low_slope = numeric(),
-  ci_high_slope = numeric(),
-  se = numeric(),
-  sd_residuals = numeric(),
-  aic = numeric(),
-  bic = numeric(),
-  error_flag = character()  #Column to track the error flag
-) 
-
-for (i in unique(inverts_data$species_name)) {
-  
-  mod_data_inverts <- 
-    inverts_data %>% 
-    filter(species_name == i)
-  
-# Check the number of unique levels of site_code for each species_name
-  unique_levels <- n_distinct(inverts_data$site_code)  
-  
-    if (unique_levels <= 1) {
-    warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
-    next  # Skip to the next iteration
-  }
-  
-  # Fit the mixed-effects model
-  tryCatch({inverts_model <- lmerTest::lmer(log_count ~ survey_year + (1|site_code), data = mod_data_inverts) 
-  
-  intercept <- lme4::fixef(inverts_model)[1] %>% as.numeric()
-  slope <- lme4::fixef(inverts_model)[2] %>% as.numeric()
-  
-  #Determine the reference year from the data = 1992
-  reference_year <- min(mod_data_inverts$survey_year)
-    
-  #Calculate intercept at year 1990 & 1991
-  intercept1990 <- intercept + slope * (1990 - reference_year)
-  intercept1991 <- intercept + slope * (1991 - reference_year)
-  
-  # Check if the model has a singular fit
-  if (isSingular(inverts_model)) {
-    error_flag <- "Singular Fit"  # Set the error flag
-  } else {
-    error_flag <- ""  # No error flag
-    # Extracting p-value
-    p_value <- summary(inverts_model)$coefficients[2, "Pr(>|t|)"]
-    
-    ci <- confint(inverts_model, method = "Wald")
-    
-    ci_low_intercept <- ci["(Intercept)", 1]
-    ci_high_intercept <- ci["(Intercept)", 2]
-    ci_low_slope <- ci["survey_year", 1]
-    ci_high_slope <- ci["survey_year", 2]
-    
-    se <- summary(inverts_model)$coefficients[2, "Std. Error"]
-    sd_residuals <- summary(inverts_model)$sigma
-    aic <- AIC(inverts_model)
-    bic <- BIC(inverts_model)
-  }
-  
-  output <- summary(object = inverts_model)
-  
-  result_inverts <- result_inverts %>% 
-    add_row(species_name = i, slope = slope, 
-            intercept = intercept, 
-            intercept1990 = intercept1990,
-            intercept1991 = intercept1991,
-            p_value = p_value,
-            ci_low_intercept = ci_low_intercept, 
-            ci_high_intercept = ci_high_intercept, 
-            ci_low_slope = ci_low_slope,
-            ci_high_slope = ci_high_slope, 
-            se = se, 
-            sd_residuals = sd_residuals,
-            aic = aic,
-            bic = bic,
-            error_flag = error_flag) %>%
-    mutate(sig = case_when(p_value <= 0.001 ~ "***",
-                           p_value <= 0.01  ~ "**",
-                           p_value <= 0.05  ~ "*",
-                           TRUE ~ "")) }, error = function(e) {
-    cat("Error occurred for species:", i, "\n")
-    cat("Error message:", conditionMessage(e), "\n")
-  })
-
-}
-
-#Determining % change (1992 - 2024)
-result_inverts <- result_inverts %>% 
-  mutate(y_1992 = 10^(intercept+(slope*1992)), 
-         y_2024 = 10^(intercept+(slope*2024)), 
-         y_1992_lwr = 10^(intercept+(ci_low_slope*1992)), 
-         y_2024_lwr = 10^(intercept+(ci_low_slope*2024)),
-         y_1992_upr = 10^(intercept+(ci_high_slope*1992)), 
-         y_2024_upr = 10^(intercept+(ci_high_slope*2024))
-         ) %>% 
-  mutate(difference = (y_2024-y_1992), 
-         difference_lwr = y_2024_lwr-y_1992_lwr, 
-         difference_upr = y_2024_upr-y_1992_upr) %>% 
-  mutate(thirtyyear_change = (difference/y_1992)*100,
-         thirtyyear_change_lwr = (difference_lwr/y_1992_lwr)*100,
-         thirtyyear_change_upr = (difference_upr/y_1992_upr)*100)
-
-
-#Determining % change (decade change)
-result_inverts <- result_inverts %>% 
-  mutate(y_2013 = 10^(intercept+(slope*2013)), 
-         y_2023 = 10^(intercept+(slope*2023)), 
-         y_2013_lwr = 10^(intercept+(ci_low_slope*2013)), 
-         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
-         y_2013_upr = 10^(intercept+(ci_high_slope*2013)), 
-         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
-         ) %>% 
-  mutate(diff = (y_2023-y_2013), 
-         diff_lwr = y_2023_lwr-y_2013_lwr, 
-         diff_upr = y_2023_upr-y_2013_upr) %>% 
-  mutate(decade_change = (diff/y_2013)*100,
-         decade_change_lwr = (diff_lwr/y_2013_lwr)*100,
-         decade_change_upr = (diff_upr/y_2013_upr)*100)
-
-```
-
-## Coral LMM
-```{r - year range 2008 - 2022}
-
-result_coral <- tibble(
-  species_name = character(),
-  slope = numeric(),
-  intercept = numeric(),
-  intercept2007 = numeric(),
-  intercept2008 = numeric(),
-  p_value = numeric(),
-  ci_low_intercept = numeric(),
-  ci_high_intercept = numeric(),
-  ci_low_slope = numeric(),
-  ci_high_slope = numeric(),
-  se = numeric(),
-  sd_residuals = numeric(),
-  aic = numeric(),
-  bic = numeric(),
-  error_flag = character()  # New column to track the error flag
-) 
-
-for (i in unique(coral_data$species_name)) {
-  
-  mod_data_coral <- coral_data %>% filter(species_name == i)
-  
-  
-  # Check the number of unique levels of site_code for each species_name
-  unique_levels <- n_distinct(coral_data$site_code)
-  
-  if (unique_levels <= 1) {
-    warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
-    next  # Skip to the next iteration
-  }
-  
-  # Fit the mixed-effects model
-  tryCatch({coral_model <- lmerTest::lmer(log_cover ~ survey_year + (1|site_code), data = mod_data_coral) 
-  
-  intercept <- lme4::fixef(coral_model)[1] %>% as.numeric()
-  slope <- lme4::fixef(coral_model)[2] %>% as.numeric()
-  
-  #Determine the reference year from the data = 2008
-  reference_year <- min(mod_data_coral$survey_year)
-    
-  #Calculate intercept at year 2007 & 2008
-  intercept2007 <- intercept + slope * (2007 - reference_year)
-  intercept2008 <- intercept + slope * (2008 - reference_year)
-  
-  # Check if the model has a singular fit
-  if (isSingular(coral_model)) {
-    error_flag <- "Singular Fit"  # Set the error flag
-  } else {
-    error_flag <- ""  # No error flag
-    # Extracting p-value
-    p_value <- summary(coral_model)$coefficients[2, "Pr(>|t|)"]
-    
-    ci <- confint(coral_model, method = "Wald")
-    
-    ci_low_intercept <- ci["(Intercept)", 1]
-    ci_high_intercept <- ci["(Intercept)", 2]
-    ci_low_slope <- ci["survey_year", 1]
-    ci_high_slope <- ci["survey_year", 2]
-
-    se <- summary(coral_model)$coefficients[2, "Std. Error"]
-    sd_residuals <- summary(coral_model)$sigma
-    aic <- AIC(coral_model)
-    bic <- BIC(coral_model)
-    
-    # Extract residuals
-    residuals <- residuals(coral_model)
-      
-    
-  }
-  
-  output <- summary(object = coral_model)
-  
-  result_coral <- result_coral %>% 
-    add_row(species_name = i, slope = slope, 
-            intercept = intercept, 
-            intercept2007 = intercept2007,
-            intercept2008 = intercept2008,
-            p_value = p_value,
-            ci_low_intercept = ci_low_intercept, 
-            ci_high_intercept = ci_high_intercept, 
-            ci_low_slope = ci_low_slope,
-            ci_high_slope = ci_high_slope,
-            se = se, 
-            sd_residuals = sd_residuals,
-            aic = aic,
-            bic = bic,
-            error_flag = error_flag) %>%
-    mutate(sig = case_when(p_value <= 0.001 ~ "***",
-                           p_value <= 0.01  ~ "**",
-                           p_value <= 0.05  ~ "*",
-                           TRUE ~ ""))  
-  }, error = function(e) {
-    cat("Error occurred for species:", i, "\n")
-    cat("Error message:", conditionMessage(e), "\n")
-  })
-  
-}
-
-#Determining % change (2008 - 2022)
-result_coral <- result_coral %>% 
-  mutate(y_2008 = 10^(intercept+(slope*2008)), 
-         y_2022 = 10^(intercept+(slope*2022)), 
-         y_2008_lwr = 10^(intercept+(ci_low_slope*2008)), 
-         y_2022_lwr = 10^(intercept+(ci_low_slope*2022)),
-         y_2008_upr = 10^(intercept+(ci_high_slope*2008)), 
-         y_2022_upr = 10^(intercept+(ci_high_slope*2022))
-         ) %>% 
-  mutate(difference = (y_2022-y_2008), 
-         difference_lwr = y_2022_lwr-y_2008_lwr, 
-         difference_upr = y_2022_upr-y_2008_upr) %>% 
-  mutate(fourteenyear_change = (difference/y_2008)*100,
-         fourteenyear_change_lwr = (difference_lwr/y_2008_lwr)*100,
-         fourteenyear_change_upr = (difference_upr/y_2008_upr)*100)
-
-
-#Determining % change (decade change)
-result_coral <- result_coral %>% 
-  mutate(y_2012 = 10^(intercept+(slope*2012)), 
-         y_2022 = 10^(intercept+(slope*2022)), 
-         y_2012_lwr = 10^(intercept+(ci_low_slope*2012)), 
-         y_2022_lwr = 10^(intercept+(ci_low_slope*2022)),
-         y_2012_upr = 10^(intercept+(ci_high_slope*2012)), 
-         y_2022_upr = 10^(intercept+(ci_high_slope*2022))
-         ) %>% 
-  mutate(diff = (y_2022-y_2012), 
-         diff_lwr = y_2022_lwr-y_2012_lwr, 
-         diff_upr = y_2022_upr-y_2012_upr) %>% 
-  mutate(decade_change = (diff/y_2012)*100,
-         decade_change_lwr = (diff_lwr/y_2012_lwr)*100,
-         decade_change_upr = (diff_upr/y_2012_upr)*100)
-         
-```
-
-
-```{r - Chi Squared Test - signficant changes}
-###################### Endemism versus threat ##########################
-
-# Create a matrix with your data
-data <- matrix(c(83, 130, 38, 157), nrow = 2)
-
-# Attach row and column names
-rownames(data) <- c("Threatened", "Non-Threatened")
-colnames(data) <- c("Endemic", "Non-Endemic")
-
-# Print the data
-print(data)
-
-# Perform the chi-squared test
-result <- chisq.test(data, correct = TRUE)
-
-# Print the result
-print(result)
-
-# Extract and print the p-value
-p_value <- result$p.value
-print(p_value)
-
-# Interpret the result
-if (p_value < 0.05) {
-  cat("There is a significant association between endemism status and threatened status.\n")
-  
-  # Calculate Cramér's V
-  chi2_statistic <- result$statistic
-  n <- sum(data)
-  min_dim <- min(dim(data)) - 1
-  cramers_v <- sqrt(chi2_statistic / (n * min_dim))
-  
-  # Print Cramér's V
-  print(cramers_v)
-  
-  # Interpretation of Cramér's V
-  if (cramers_v < 0.1) {
-    cat("The association is very weak (Cramér's V =", cramers_v, ").\n")
-  } else if (cramers_v < 0.3) {
-    cat("The association is small (Cramér's V =", cramers_v, ").\n")
-  } else if (cramers_v < 0.5) {
-    cat("The association is medium (Cramér's V =", cramers_v, ").\n")
-  } else {
-    cat("The association is large (Cramér's V =", cramers_v, ").\n")
-  }
-  
-} else {
-  cat("There is no significant association between endemism status and threatened status.\n")
-}
-
-
-###################### Taxa versus threat ##########################
-
-# Create a matrix with your data
-data <- matrix(c(41, 58, 30, 48, 50, 181), nrow = 2)
-
-# Attach row and column names
-rownames(data) <- c("Threatened", "Non-Threatened")
-colnames(data) <- c("Invertebrates", "Macroalgae", "Fishes")
-
-# Print the data
-print(data)
-
-# Perform the chi-squared test
-result <- chisq.test(data, correct = TRUE)
-
-# Print the result
-print(result)
-
-# Extract and print the p-value
-p_value <- result$p.value
-print(p_value)
-
-# Interpret the result
-if (p_value < 0.05) {
-  cat("There is a significant association between taxa and threatened status.\n")
-  
-  # Calculate Cramér's V
-  chi2_statistic <- result$statistic
-  n <- sum(data)
-  min_dim <- min(dim(data)) - 1
-  cramers_v <- sqrt(chi2_statistic / (n * min_dim))
-  
-  # Print Cramér's V
-  print(cramers_v)
-  
-  # Interpretation of Cramér's V
-  if (cramers_v < 0.1) {
-    cat("The association is very weak (Cramér's V =", cramers_v, ").\n")
-  } else if (cramers_v < 0.3) {
-    cat("The association is small (Cramér's V =", cramers_v, ").\n")
-  } else if (cramers_v < 0.5) {
-    cat("The association is medium (Cramér's V =", cramers_v, ").\n")
-  } else {
-    cat("The association is large (Cramér's V =", cramers_v, ").\n")
-  }
-  
-} else {
-  cat("There is no significant association between taxa and threatened status.\n")
-}
-
-
-###################### Biogeography versus threat ##########################
-
-# Create a matrix with your data
-data <- matrix(c(108, 202, 13, 85), nrow = 2)
-
-# Attach row and column names
-rownames(data) <- c("Threatened", "Non-Threatened")
-colnames(data) <- c("Temperate", "Tropical")
-
-# Print the data
-print(data)
-
-# Perform the chi-squared test
-result <- chisq.test(data, correct = TRUE)
-
-# Print the result
-print(result)
-
-# Extract and print the p-value
-p_value <- result$p.value
-print(p_value)
-
-# Interpret the result
-if (p_value < 0.05) {
-  cat("There is a significant association between biogeography and threatened status.\n")
-  
-  # Calculate Cramér's V
-  chi2_statistic <- result$statistic
-  n <- sum(data)
-  min_dim <- min(dim(data)) - 1
-  cramers_v <- sqrt(chi2_statistic / (n * min_dim))
-  
-  # Print Cramér's V
-  print(cramers_v)
-  
-  # Interpretation of Cramér's V
-  if (cramers_v < 0.1) {
-    cat("The association is very weak (Cramér's V =", cramers_v, ").\n")
-  } else if (cramers_v < 0.3) {
-    cat("The association is small (Cramér's V =", cramers_v, ").\n")
-  } else if (cramers_v < 0.5) {
-    cat("The association is medium (Cramér's V =", cramers_v, ").\n")
-  } else {
-    cat("The association is large (Cramér's V =", cramers_v, ").\n")
-  }
-  
-} else {
-  cat("There is no significant association between biogeography and threatened status.\n")
-}
-
-```
-
-#Joining results before plotting
-```{r - joining each decade result together for plotting}
-
-#Read in a pre-existing data sheet to extract information about the species
-othervariables <- read_csv("final_model_export.csv") %>%
-  select(species_name, 
-         biogeog, 
-         taxon, 
-         class, 
-         max_depth, 
-         max_length, 
-         endemism, 
-         IUCN, 
-         IUCN_category, 
-         date_assessed) %>%
-  mutate(biogeog = recode(biogeog, 
-                          `cool (temperate)` = "temperate (cool)", 
-                          `warm (temperate)` = "temperate (warm)"))
-
-
-##############################Full time series #####################
-
-#Bind results data frames together
-alltime_change <- bind_rows(result_algae, result_coral, result_inverts, result_fish)
-
-#add other information for plotting 
-alltime_change <- alltime_change %>% 
-  select(species_name, 
-         slope, 
-         intercept, 
-         p_value, 
-         decade_change_lwr, 
-         decade_change_upr, 
-         se,
-         sd_residuals,
-         aic,
-         bic,
-         error_flag,
-         sig,
-         decade_change,
-         thirtyyear_change,
-         fourteenyear_change) %>%
-  left_join(othervariables, by = "species_name")
-
-#add in column with direction of change
-alltime_change <- alltime_change %>% 
-  mutate(slope_category = ifelse(slope < 0, "declining", "increasing"))
-
-#Remove species with singularity errors from data frame for exporting 
-alltime_change <- alltime_change %>% 
-  filter(error_flag != "Singular Fit") %>%
-  select(-error_flag)
-#Note - no species with singularity errors 
-
-#Export this final list - 1992 - 2024
-#write_csv(alltime_change, "alltime_change.csv")
-```
-
-#Plotting
-Read in csv of LMM results, rate of change from above and the species current 
-IUCN status.This spreadsheet has also filtered out all of the species that 
-produced the 'isSingular' error in the modelling stage. 
-```{r}
-alltime_change <- alltime_change %>%
-  mutate(biogeog = recode(biogeog, 
-                          `cool (temperate)` = "temperate (cool)", 
-                          `warm (temperate)` = "temperate (warm)")) 
-
-#Decade decline plots
-alltime_change$taxon <- factor(alltime_change$taxon, levels = c("Macroalgae", "Invertebrate", "Vertebrate"))
-alltime_change$biogeog <- factor(alltime_change$biogeog, levels = c("temperate (cool)", "temperate (warm)", "tropical"))
-
-
-#Endemic species plot
-# Define the colors used for the `geom_rect` layers
-fill_colors <- c("#cccc33", "yellow", "orange", "red")
-
-endemicdecade <- alltime_change %>%
-  # Combine taxon and biogeog factor conversion into a single mutate call
-  mutate(
-    taxon = case_when(
-      taxon == "Vertebrate" ~ "c) Fishes",
-      taxon == "Invertebrate" ~ "b) Invertebrates",
-      taxon == "Macroalgae" ~ "a) Macroalgae"
-    ),
-    taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes")),
-    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)"))
-  ) %>%
-  filter(p_value < 0.05, slope < 0, endemism == "endemic") %>%
-  ggplot(aes(x = decade_change, y = reorder(species_name, -decade_change))) +
-
-  # Define the background rectangles with xmin and xmax values
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = 0, xmax = -30, fill = "#cccc33") +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -30, xmax = -50, fill = "yellow") +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -50, xmax = -80, fill = "orange") +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = "red") +
-
-  # Add vertical dashed lines
-  geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
-
-  # Error bars and points for species with position adjustment
-  geom_errorbarh(aes(xmin = decade_change_lwr, xmax = decade_change_upr, height = 0.2)) +
-  geom_point(aes(shape = biogeog), size = 4, position = position_nudge(y = -0.12)) +
-
-  # Add facets for taxa with free y scale and spacing
-  ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
-
-  # Customize shapes for the different biogeographies
-  scale_shape_manual(values = c(
-    "temperate (cool)" = 16,
-    "temperate (warm)" = 17,
-    "tropical" = 15
-  )) +
-
-  # Axis labels and legend title
-  labs(
-    x = "Rate of decline over a decade",
-    y = "Species Name",
-    shape = ""
-  ) +
-
-  # Apply minimal theme and customizations
-  theme_minimal() +
-  theme(
-    legend.position = "right",
-    panel.grid.major.y = element_blank(),  # Remove grid lines for y-axis
-    axis.title.y = element_blank(),        # Remove y-axis title
-    axis.text.y = element_text(face = "italic"),  # Italicize species names
-    plot.title = element_text(hjust = 0.5),
-    strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
-  )
-
-plot(endemicdecade)
-
-#Save plot of endemics
-pdf("alltime_change_EndemicsDecade_Final.pdf", width = 8, height = 12)  # Dimensions in inches
-print(endemicdecade)  # Replace 'map' with your plot object
-dev.off()  # Close the device
-
-#####################
-
-
-#Non-endemic species plot
-# Define the colors used for the `geom_rect` layers
-fill_colors <- c("#cccc33", "yellow", "orange", "red")
-
-nonendemicsdecade <- alltime_change %>%
-  # Combine taxon and biogeog factor conversion into a single mutate call
-  mutate(
-    taxon = case_when(
-      taxon == "Vertebrate" ~ "c) Fishes",
-      taxon == "Invertebrate" ~ "b) Invertebrates",
-      taxon == "Macroalgae" ~ "a) Macroalgae"
-    ),
-    taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes")),
-    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)"))
-  ) %>%
-  filter(p_value < 0.05, slope < 0, endemism == "non-endemic") %>%
-  ggplot(aes(x = decade_change, y = reorder(species_name, -decade_change))) +
-  
-  # Define the background rectangles with xmin and xmax values
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -0, xmax = -30, fill = fill_colors[1]) +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -30, xmax = -50, fill = fill_colors[2]) +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -50, xmax = -80, fill = fill_colors[3]) +
-  geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = fill_colors[4]) +
-
-  # Add vertical dashed lines
-  geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
-  
-  # Error bars and points for species
-  geom_errorbarh(aes(xmin = decade_change_lwr, xmax = decade_change_upr, height = 0.2)) +
-  geom_point(aes(shape = biogeog), size = 4) +
-
-  # Add facets for taxa with free y scale and spacing
-  ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
-
-  # Customize shapes for the different biogeographies
-  scale_shape_manual(values = c(
-    "temperate (cool)" = 16,
-    "temperate (warm)" = 17,
-    "tropical" = 15
-  )) +
-
-  # Axis labels and legend title
-  labs(
-    x = "Rate of decline over a decade",
-    y = "Species Name",
-    shape = ""
-  ) +
-
-  # Apply minimal theme and customizations
-  theme_minimal() +
-  theme(
-    legend.position = "right",
-    panel.grid.major.y = element_blank(),  # Remove grid lines for y-axis
-    axis.title.y = element_blank(),        # Remove y-axis title
-    axis.text.y = element_text(face = "italic"),  # Italicize species names
-    plot.title = element_text(hjust = 0.5),
-    strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
-  )
-
-plot(nonendemicsdecade)
-
-#Save plot of non-endemics
-pdf("alltime_change_NonendemicsDecade_Final.pdf", width = 8, height = 12)  # Dimensions in inches
-print(nonendemicsdecade)  # Replace 'map' with your plot object
-dev.off()  # Close the device
-
-```
-
-#IUCN Status versus trend plots
-```{r}
-#Specify order of facet panels in plots
-#desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
-
-#ENDEMICS
-all_species_endemic <- alltime_change %>%
-  filter(endemism == "endemic") %>%
-  mutate(new = case_when(
-    decade_change >= 0 ~ "Least Concern",
-    decade_change >= -29.99 & decade_change < 0 ~ "Near Threatened",
-    decade_change >= -49.99 & decade_change < -29 ~ "Vulnerable",
-    decade_change >= -79.99 & decade_change < -50 ~ "Endangered",
-    decade_change >= -100 & decade_change < -80 ~ "Critically Endangered"
-  )) 
-
-all_species_endemic <- all_species_endemic  %>%
-  count(taxon, IUCN, new, species_name) %>%
-  mutate(new = factor(new, levels = c("Endangered", "Vulnerable", "Near Threatened", "Least Concern", "Lower Risk/conservation dependent"))) %>%
-  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
-                           taxon == "Invertebrate" ~ "b) Invertebrates",
-                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
-  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes"))) %>%
-  ggplot(aes(x = IUCN, y = n, fill = new)) +
-  geom_col() +
-  facet_wrap(~taxon, ncol = 1,scales = "free_y") + 
-  labs(x = "IUCN Red List Conservation Status",
-       y = "Species Count",
-       fill = "Population trend") +
-  scale_fill_manual(
-        values = c("Critically Endangered" = "red", "Endangered" = "orange", "Vulnerable" = "yellow", "Near Threatened" = "#cccc33", "Least Concern" = "green3"),
-    breaks = c("Critically Endangered", "Endangered", "Vulnerable", "Near Threatened", "Least Concern")) +
-  # scale_x_discrete(limits = c("Not Evaluated", "Data Deficient", "Near Threatened", "Least Concern", "Vulnerable", "Endangered")) +
-  scale_x_discrete(limits = c("Not Evaluated", "Data Deficient", "Least Concern","Near Threatened",  "Vulnerable", "Endangered")) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
-    legend.position = "right",
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor = element_blank(),
-    plot.title = element_text(hjust = 0.5),
-    strip.text = element_text(size = 11, hjust = 0),
-    axis.title.y = element_text(margin = margin(r = 20)),
-    strip.text.x = element_text(margin = margin(b = 10)),
-    strip.text.y = element_text(margin = margin(r = 10)),
-    axis.title.x = element_text(margin = margin(r = 40, t = 20))
-  )
-
-#Save plot of IUCN endemics
-pdf("alltime_change_EndemicsIUCN_Final.pdf", width = 6, height = 8)  # Dimensions in inches
-print(all_species_endemic)  # Replace 'map' with your plot object
-dev.off()  # Close the device
-
-################################ NON-ENDEMICS #######################################
-
-#NON-ENDEMICS
-#Specify order of facet panels in plots
-#desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
-
-all_species_non_endemic <- alltime_change %>%
-  filter(endemism == "non-endemic") %>%
-  mutate(new = case_when(
-    decade_change >= 0 ~ "Least Concern",
-    decade_change >= -29.99 & decade_change < 0 ~ "Near Threatened",
-    decade_change >= -49.99 & decade_change < -29 ~ "Vulnerable",
-    decade_change >= -79.99 & decade_change < -50 ~ "Endangered",
-    decade_change >= -100 & decade_change < -80 ~ "Critically Endangered"
-  )) 
-
-all_species_non_endemic <- all_species_non_endemic %>%
-  count(taxon, IUCN, new, species_name) %>%
-  mutate(new = factor(new, levels = c("Endangered", "Vulnerable", "Near Threatened", "Least Concern", "Lower Risk/conservation dependent"))) %>%
-  mutate(taxon = case_when(taxon == "Vertebrate" ~ "c) Fishes",
-                           taxon == "Invertebrate" ~ "b) Invertebrates",
-                           taxon == "Macroalgae" ~ "a) Macroalgae")) %>%
-  mutate(taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes"))) %>%
-  ggplot(aes(x = IUCN, y = n, fill = new)) +
-  geom_col() +
-  facet_wrap(~taxon, ncol = 1,scales = "free_y") + 
-  labs(x = "IUCN Red List Conservation Status",
-       y = "Species Count",
-       fill = "Population trend") +
-  scale_fill_manual(
-    values = c("Critically Endangered" = "red", "Endangered" = "orange", "Vulnerable" = "yellow", "Near Threatened" = "#cccc33", "Least Concern" = "green3"),
-    breaks = c("Critically Endangered", "Endangered", "Vulnerable", "Near Threatened", "Least Concern")) +
-  # scale_x_discrete(limits = c("Not Evaluated", "Lower Risk/conservation dependent", "Data Deficient", "Least Concern", "Near Threatened", "Vulnerable", "Endangered")) +
-  scale_x_discrete(limits = c("Not Evaluated",  "Data Deficient", "Lower Risk/conservation dependent","Least Concern", "Near Threatened", "Vulnerable", "Endangered")) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
-    legend.position = "right",
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor = element_blank(),
-    plot.title = element_text(hjust = 0.5),
-    strip.text = element_text(size = 11, hjust = 0),
-    axis.title.y = element_text(margin = margin(r = 20)),
-    strip.text.x = element_text(margin = margin(b = 10)),
-    strip.text.y = element_text(margin = margin(r = 10)),
-    axis.title.x = element_text(margin = margin(r = 40, t = 20))
-  )
-
-#Save plot of IUCN endemics
-pdf("alltime_change_NonendemicsIUCN_Final.pdf", width = 6, height = 8)  # Dimensions in inches
-print(all_species_non_endemic)  # Replace 'map' with your plot object
-dev.off()  # Close the device
-```
-
-```{r - bar plot of evaluation dates}
-
-yearassessed <- alltime_change %>%
-  select(species_name, IUCN, date_assessed) %>%
-  mutate(year_assessed = case_when(
-    date_assessed == "Not Evaluated" ~ "Not Evaluated",  # Assign "Not Evaluated" if date_assessed is "Not Evaluated"
-    !is.na(date_assessed) & date_assessed != "" ~ {
-      parsed_date <- parse_date_time(date_assessed, orders = c("dmy", "mdy"), quiet = TRUE)
-      as.character(year(parsed_date))  # Extract the year and convert to character
-    },
-    TRUE ~ "Not Evaluated"  # Assign "Not Evaluated" for all other NA cases
-  ))
-
-#Summarise the number of IUCN assessments in a given year
-yearassessed <- yearassessed %>%
-  group_by(year_assessed) %>%             
-  summarise(total_species = n(),           
-            .groups = 'drop') 
-
-
-# Create the bar plot with minimal theme and black fill
-yearassessed_plot <- ggplot(yearassessed, aes(x = factor(year_assessed, levels = unique(year_assessed)), y = total_species)) +
-  geom_bar(stat = "identity", fill = "black", color = "black", width = 0.8) +
-  labs(x = "Assessment Year",
-       y = "Number of Assessments") +
-  theme_minimal(base_size = 15) +
-  theme(
-    plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
-    axis.title = element_text(face = "bold", size = 12),  # Adjust size here
-    axis.text = element_text(color = "black"),
-    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    panel.background = element_blank(),
-    plot.background = element_blank(),
-    axis.line = element_line(color = "black") 
-  ) +
-  scale_y_continuous(expand = c(0, 0)) +
-  scale_x_discrete(expand = c(0, 0))
-
-pdf("Year_assessed.pdf", width = 9, height = 10)  # Dimensions in inches
-print(yearassessed_plot)  # Replace 'map' with your plot object
-dev.off()  # Close the device
-
-
-#There are 342 species "Not Evaluated" - 47% of common shallow reef species not assessed on the IUCN
-```
-
-
-#Produce map of sites where all data is available from around Australia
-#MAP
-```{r packages for mapping}
-library(dplyr)  
-library(ggplot2)
-library(ggspatial)
-library(ozmaps)
-library(sf)
-library(rnaturalearth)
-library(rnaturalearthdata)
-library(rnaturalearthhires)
-library(ggspatial)
-library(tidyr)
-```
-
-```{r - read in data}
-#Algae
-algae_mappingsites <- read_csv("algae_mappingsites_2024.csv")
-
-#Fish
-fish_mappingsites <- read_csv("fish_mappingsites_2024.csv")
-
-#Inverts
-inverts_mappingsites <- read_csv("inverts_mappingsites_2024.csv")
-
-#Coral
-coral_mappingsites <- read_csv("coral_mappingsites_2024.csv")
-
-```
-
-```{r - themes}
-theme_set(theme_bw())
-world <- ne_countries(scale = "medium", returnclass = "sf")
-class(world)
-```
-
-#Determine latitude and longitude points
-```{r - determine lats and longs - Clean}
-#algae
-algae_lats_longs_clean <- algae_mappingsites  %>%
-  select(latitude, longitude, site_code, species_name)
-
-#fish
-fish_lats_longs_clean <- fish_mappingsites %>%
-  select(latitude, longitude, site_code, species_name)
-
-#inverts
-inverts_lats_longs_clean <- inverts_mappingsites %>%
-  select(latitude, longitude, site_code, species_name)
-
-#coral
-coral_lats_longs_clean <- coral_mappingsites %>%
-  select(latitude, longitude, site_code, species_name)
-
-# Combine latitude and longitude tables for algae, fish, inverts, and coral
-all_lats_longs_clean <- bind_rows(algae_lats_longs_clean, fish_lats_longs_clean, inverts_lats_longs_clean, coral_lats_longs_clean) %>%
-  select(latitude, longitude)
-
-#Remove duplicates
-all_lats_longs_clean <- all_lats_longs_clean %>%
-  select(latitude, longitude) %>%
-  distinct()
-
-all_lats_longs_clean <- all_lats_longs_clean[!duplicated(all_lats_longs_clean[, c("latitude", "longitude")]), ]
-```
-
-#Produce map
-```{r - lats and long code for map}
-#RAW data map
-coordinates <- all_lats_longs_clean
-
-#how many sites in total are on this map?
-unique_species_count <- length(unique(coordinates$latitude))
-unique_species_count #2652 sites
-
-# Load world and Australian states data
-world <- ne_countries(scale = "medium", returnclass = "sf")
-oz_states <- ne_states(country = "Australia", returnclass = "sf")
-
-#read in covariates
-covariates <- read_csv("covariates_final.csv")
-
-# Select relevant columns from covariates
-covariates_selected <- covariates %>%
-  select(Latitude, Longitude, temperature_mean_2020) %>%
-  rename(latitude= Latitude, longitude = Longitude)
-
-# Merge coordinates with temperature data
-merged_data <- coordinates %>%
-  left_join(covariates_selected, by = c("latitude", "longitude"))
-
-# Assign temperature categories
-merged_data <- merged_data %>%
-  mutate(temperature_category = case_when(
-    temperature_mean_2020 < 17.5 ~ "temperate (cool)",
-    temperature_mean_2020 >= 17.5 & temperature_mean_2020 < 23 ~ "temperate (warm)",
-    temperature_mean_2020 >= 23 ~ "tropical",
-    TRUE ~ NA_character_  # Set to NA instead of "Unknown"
-  ))
-
-# Fill down the temperature categories for NAs
-merged_data <- merged_data %>%
-  arrange(latitude, longitude) %>%  # Ensure data is sorted by lat/long
-  fill(temperature_category, .direction = "down")
-
-# Optionally, replace the remaining NAs with "Unknown"
-merged_data <- merged_data %>%
-  mutate(temperature_category = ifelse(is.na(temperature_category), "Unknown", temperature_category))
-
-#re-order key
-merged_data$temperature_category <- factor(merged_data$temperature_category, 
-                                            levels = c("tropical", 
-                                                       "temperate (warm)", 
-                                                       "temperate (cool)"))
-# Create the map
-map <- ggplot() +
-  geom_sf(data = world, fill = "gray90", color = "gray50") +
-  geom_sf(data = oz_states, fill = "gray90", color = "gray50") +
-  geom_point(data = merged_data, 
-             aes(x = longitude, y = latitude, fill = temperature_category), 
-             size = 1.8, alpha = 0.9, shape = 21, color = "grey10") +  # Black borders
-  scale_fill_manual(values = c("temperate (cool)" = "dodgerblue2", 
-                               "temperate (warm)" = "darkgoldenrod1", 
-                               "tropical" = "firebrick2")) +  # Fill colors
-  xlab("Longitude") + 
-  ylab("Latitude") +
-  coord_sf(xlim = c(110.00, 160.00), ylim = c(-45.00, -8.00), expand = FALSE) +
-  annotation_scale(location = "bl", width_hint = 0.3) +
-  annotation_north_arrow(location = "bl", which_north = "true",
-                         pad_x = unit(0.1, "in"), pad_y = unit(0.3, "in"),
-                         style = north_arrow_fancy_orienteering) +
-  labs(fill = "Biogeography") +  # Legend title for fill colors
-  guides(fill = guide_legend(override.aes = list(size = 4))) +  # Larger legend points
-  theme_minimal(base_size = 8) +
-  theme(panel.grid.major = element_blank(), 
-        panel.grid.minor = element_blank(),
-        axis.text = element_text(size = 7),
-        axis.title = element_text(size = 9))
-
-# Print the map
-print(map)
-
-pdf("Final_map.pdf", width = 10, height = 7)  # Dimensions in inches
-print(map)  # Replace 'map' with your plot object
-dev.off()  # Close the device
-
-```
-

@@ -1,0 +1,744 @@
+---
+title: "Macroalgal and mobile macro-invertebrate species face high extinction risk - part 2: modelling"
+author: "Olivia J. Johnson, Freddie J. Heather & Camille Mellin"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::downcute:
+  # bookdown::html_document2:
+    code_folding: show
+---
+
+# About this script
+
+The following document provides the R code for the analysis for the paper: Johnson *et al.* (in review.) Macroalgal and mobile macro-invertebrate species face high extinction risk
+
+**\*Corresponding author:**
+[olivia.johsnon\@utas.edu.au](mailto:olivia.johsnon@utas.edu.au){.email}
+
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **R-version**          | 4.4.1 (2024-06-14 ucrt) -- "Race for Your Life"                                                        |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **platform**           | x86_64-w64-mingw32/x64                                                                                   |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Article DOI**        |                                                                                                       |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Article link**       |                                                                                                       |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Article citation**   | Johnson *et al.* (in review.) Macroalgal and mobile macro-invertebrate species face high extinction risk |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Time series**        | 1992 - 2024                                                                                              |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Geographical scale** | Continental Australia                                                                                 |
++------------------------+-------------------------------------------------------------------------------------------------------+
+| **Code author contact**| olivia.johnson@utas.edu.au                                                                            |
++------------------------+-------------------------------------------------------------------------------------------------------+
+
+# Set-up
+
+```{r knitr-options}
+#| include = FALSE
+
+library(knitr)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# save csv files for each step?
+save_csv <- TRUE
+
+```
+
+# Loading packages
+Load in all required packages for this analysis
+```{r packages}
+
+library(knitr)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(lme4)
+library(lmerTest)
+library(dplyr)
+library(data.table)
+library(zoo, include.only = "na.approx")
+library(ggforce, include.only = "facet_col")
+library(data.table)
+library(vcd)
+
+# "not in" function
+`%!in%` <- Negate(`%in%`)
+```
+
+# Linear mixed effects models
+Below, I will perform a series of linear mixed-effects models on the
+data above that has been cleaned available in previous script. Each major group 
+will be analysed separately (algae, fish, inverts and coral) and a loop 
+performed on the model so that each individual species has their trends over time
+analysed.
+
+Filter parameters set above are the bare minimum that are required in
+order to fit a linear line and therefore perform the linear
+mixed-effects models on the data.
+
+All models appear to run, but there are some warnings at the end of the
+loop. Where issues arise in the modelling including the "isSingular"
+error, indicating convergence when the model runs and within the data
+for the species the model is being performed. The individual species
+that are having this error are then inspected, and in some instances has
+been randomly plotted to see (if there are any obvious signs) what may
+be causing convergence. If it appears that it is limited data to
+effectively perform the model, the model loop is re-run, with a flag to
+remove any species that are having the "singular fit" error when the
+loop is performed.
+
+The table output is the list of species that has had their trends over
+time analysed and the major result values needed to understand the
+trends put into a table (slope, intercept, p-value, and significance of
+the trend).
+
+## Algae LMM
+```{r - algae 1992 - 2023}
+
+#Filter years and add a weighting in for site 
+algae_data <- 
+  algae_data %>%
+  mutate(count = 10^log_cover) %>% # Add count column from log_cover to determine weighting for species by site
+  add_count(site_code, species_name, wt = count, name = "site_count")
+
+result_algae <- tibble(
+  species_name = character(),
+  slope = numeric(),
+  intercept = numeric(),
+  intercept1990 = numeric(),
+  intercept1991 = numeric(),
+  p_value = numeric(),
+  ci_low_intercept = numeric(),
+  ci_high_intercept = numeric(),
+  ci_low_slope = numeric(),
+  ci_high_slope = numeric(),
+  se = numeric(),
+  sd_residuals = numeric(),
+  aic = numeric(),
+  bic = numeric(),
+  error_flag = character()  #column to track the error flag
+) 
+
+for (i in unique(algae_data$species_name)) {
+  
+  mod_data_algae <- 
+    algae_data %>% 
+    filter(species_name == i)
+
+# Check the number of unique levels of site_code for each species_name
+  unique_levels <- n_distinct(algae_data$site_code)
+
+  if (unique_levels <= 1) {
+    warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
+    next  # Skip to the next iteration
+  }    
+    
+  tryCatch({
+    
+    algae_model <- 
+    lmerTest::lmer(log_cover ~ survey_year + (1|site_code),
+                   data = mod_data_algae, weights = site_count) 
+  
+    intercept <- lme4::fixef(algae_model)[1] %>% as.numeric()
+    slope <- lme4::fixef(algae_model)[2] %>% as.numeric()
+  
+  #Determine the reference year from the data = 1992
+  reference_year <- min(mod_data_algae$survey_year)
+    
+  #Calculate intercept at year 1990 & 1991
+  intercept1990 <- intercept + slope * (1990 - reference_year)
+  intercept1991 <- intercept + slope * (1991 - reference_year)
+  
+  # Check if the model has a singular fit
+  if (isSingular(algae_model)) {
+    error_flag <- "Singular Fit"  # Set the error flag
+  } else {
+    error_flag <- ""  # No error flag
+    
+    # Extracting p-value
+    p_value <- summary(algae_model)$coefficients[2, "Pr(>|t|)"]
+    
+   ci <- confint(algae_model, method = "Wald")
+    
+    ci_low_intercept <- ci["(Intercept)", 1]
+    ci_high_intercept <- ci["(Intercept)", 2]
+    ci_low_slope <- ci["survey_year", 1]
+    ci_high_slope <- ci["survey_year", 2]
+    
+    se <- summary(algae_model)$coefficients[2, "Std. Error"]
+    sd_residuals <- summary(algae_model)$sigma
+    aic <- AIC(algae_model)
+    bic <- BIC(algae_model)
+    
+    # Extract residuals
+    residuals <- residuals(algae_model)
+    
+  }
+  
+  output <- summary(object = algae_model)
+  
+  result_algae <- 
+    result_algae %>% 
+    add_row(species_name = i, 
+            slope = slope, 
+            intercept = intercept, 
+            intercept1990 = intercept1990, 
+            intercept1991 = intercept1991,
+            p_value = p_value, 
+            ci_low_intercept = ci_low_intercept, 
+            ci_high_intercept = ci_high_intercept, 
+            ci_low_slope = ci_low_slope,
+            ci_high_slope = ci_high_slope,  
+            se = se, 
+            sd_residuals = sd_residuals,
+            aic = aic,
+            bic = bic,
+            error_flag = error_flag) %>%
+    mutate(sig = case_when(p_value <= 0.001 ~ "***",
+                           p_value <= 0.01  ~ "**",
+                           p_value <= 0.05  ~ "*",
+                           TRUE ~ ""))   }, error = function(e) {
+    cat("Error occurred for species:", i, "\n")
+    cat("Error message:", conditionMessage(e), "\n")
+  })
+
+}
+
+#Determining % change (1992 - 2023)
+# result_algae <- result_algae %>% 
+#   mutate(y_1992 = 10^(intercept+(slope*1992)), 
+#          y_2023 = 10^(intercept+(slope*2023)), 
+#          y_1992_lwr = 10^(intercept+(ci_low_slope*1992)), 
+#          y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
+#          y_1992_upr = 10^(intercept+(ci_high_slope*1992)), 
+#          y_2023_upr = 10^(intercept+(ci_high_slope*2023))
+#          ) %>% 
+#   mutate(difference = (y_2023-y_1992), 
+#          difference_lwr = y_2023_lwr-y_1992_lwr, 
+#          difference_upr = y_2023_upr-y_1992_upr) %>% 
+#   mutate(thirtyyear_change = (difference/y_1992)*100,
+#          thirtyyear_change_lwr = (difference_lwr/y_1992_lwr)*100,
+#          thirtyyear_change_upr = (difference_upr/y_1992_upr)*100)
+
+#Determining % change (decade change)
+result_algae <- result_algae %>% 
+  mutate(y_2013 = 10^(intercept+(slope*2013)), 
+         y_2023 = 10^(intercept+(slope*2023)), 
+         y_2013_lwr = 10^(intercept+(ci_low_slope*2013)), 
+         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
+         y_2013_upr = 10^(intercept+(ci_high_slope*2013)), 
+         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
+         ) %>% 
+  mutate(diff = (y_2023-y_2013), 
+         diff_lwr = y_2023_lwr-y_2013_lwr, 
+         diff_upr = y_2023_upr-y_2013_upr) %>% 
+  mutate(decade_change = (diff/y_2013)*100,
+         decade_change_lwr = (diff_lwr/y_2013_lwr)*100,
+         decade_change_upr = (diff_upr/y_2013_upr)*100)
+
+```
+
+## Fish LMM
+```{r - year range 1992 - 2024}
+
+#Filter years and add a weighting in for site 
+fish_data <- 
+  fish_data %>%
+  mutate(count = 10^log_count) %>% # Add count column from log_cover to determine weighting for species by site
+  add_count(site_code, species_name, wt = count, name = "site_count")
+
+result_fish <- tibble(
+  species_name = character(),
+  slope = numeric(),
+  intercept = numeric(),
+  intercept1990 = numeric(),
+  intercept1991 = numeric(),
+  p_value = numeric(),
+  ci_low_intercept = numeric(),
+  ci_high_intercept = numeric(),
+  ci_low_slope = numeric(),
+  ci_high_slope = numeric(),
+  se = numeric(),
+  sd_residuals = numeric(),
+  aic = numeric(),
+  bic = numeric(),
+  error_flag = character()  # New column to track the error flag
+) 
+
+
+for (i in unique(fish_data$species_name)) {
+  
+  mod_data_fish <- 
+    fish_data %>% filter(species_name == i)
+
+# Check the number of unique levels of site_code for each species_name
+  unique_levels <- n_distinct(mod_data_fish$site_code)
+
+
+  if (unique_levels <= 1) {
+    warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
+    next  # Skip to the next iteration
+  }
+  
+  tryCatch({fish_model <- 
+    lmerTest::lmer(log_count ~ year + (1|site_code), data = mod_data_fish, weights = site_count) 
+  
+  intercept <- lme4::fixef(fish_model)[1] %>% as.numeric()
+  slope <- lme4::fixef(fish_model)[2] %>% as.numeric()
+  
+  #Determine the reference year from the data = 1992
+  reference_year <- min(mod_data_fish$survey_year)
+    
+  #Calculate intercept at year 1990 & 1991
+  intercept1990 <- intercept + slope * (1990 - reference_year)
+  intercept1991 <- intercept + slope * (1991 - reference_year)
+  
+  # Check if the model has a singular fit
+  if (isSingular(fish_model)) {
+    error_flag <- "Singular Fit"  # Set the error flag
+  } else {
+    error_flag <- ""  # No error flag
+    # Extracting p-value
+    p_value <- summary(fish_model)$coefficients[2, "Pr(>|t|)"]
+    
+    ci <- confint(fish_model, method = "Wald")
+    
+    ci_low_intercept <- ci["(Intercept)", 1]
+    ci_high_intercept <- ci["(Intercept)", 2]
+    ci_low_slope <- ci["year", 1]
+    ci_high_slope <- ci["year", 2]
+    
+    se <- summary(fish_model)$coefficients[2, "Std. Error"]
+    sd_residuals <- summary(fish_model)$sigma
+    aic <- AIC(fish_model)
+    bic <- BIC(fish_model)
+  }
+  
+  output <- summary(object = fish_model)
+  
+  result_fish <- result_fish %>% 
+    add_row(species_name = i, 
+            slope = slope, 
+            intercept = intercept,
+            intercept1990 = intercept1990,
+            intercept1991 = intercept1991,
+            p_value = p_value, 
+            ci_low_intercept = ci_low_intercept, 
+            ci_high_intercept = ci_high_intercept, 
+            ci_low_slope = ci_low_slope,
+            ci_high_slope = ci_high_slope, 
+            se = se, 
+            sd_residuals = sd_residuals,
+            aic = aic,
+            bic = bic,
+            error_flag = error_flag) %>%
+    mutate(sig = case_when(p_value <= 0.001 ~ "***",
+                           p_value <= 0.01  ~ "**",
+                           p_value <= 0.05  ~ "*",
+                           TRUE ~ ""))  }, error = function(e) {
+    cat("Error occurred for species:", i, "\n")
+    cat("Error message:", conditionMessage(e), "\n")
+  })
+  
+  #print(summary(fish_model))
+  
+}
+
+
+# #Determining % change (1992 - 2024 (2024 only available at certain sites, 2023 best estimate))
+# result_fish <- result_fish %>% 
+#   mutate(y_1992 = 10^(intercept+(slope*1992)), 
+#          y_2024 = 10^(intercept+(slope*2024)), 
+#          y_1992_lwr = 10^(intercept+(ci_low_slope*1992)), 
+#          y_2024_lwr = 10^(intercept+(ci_low_slope*2024)),
+#          y_1992_upr = 10^(intercept+(ci_high_slope*1992)), 
+#          y_2024_upr = 10^(intercept+(ci_high_slope*2024))
+#          ) %>% 
+#   mutate(difference = (y_2024-y_1992), 
+#          difference_lwr = y_2024_lwr-y_1992_lwr, 
+#          difference_upr = y_2024_upr-y_1992_upr) %>% 
+#   mutate(thirtyyear_change = (difference/y_1992)*100,
+#          thirtyyear_change_lwr = (difference_lwr/y_1992_lwr)*100,
+#          thirtyyear_change_upr = (difference_upr/y_1992_upr)*100)
+
+#Determining % change (decade change)
+result_fish <- result_fish %>% 
+  mutate(y_2013 = 10^(intercept+(slope*2013)), 
+         y_2023 = 10^(intercept+(slope*2023)), 
+         y_2013_lwr = 10^(intercept+(ci_low_slope*2013)), 
+         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
+         y_2013_upr = 10^(intercept+(ci_high_slope*2013)), 
+         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
+         ) %>% 
+  mutate(diff = (y_2023-y_2013), 
+         diff_lwr = y_2023_lwr-y_2013_lwr, 
+         diff_upr = y_2023_upr-y_2013_upr) %>% 
+  mutate(decade_change = (diff/y_2013)*100,
+         decade_change_lwr = (diff_lwr/y_2013_lwr)*100,
+         decade_change_upr = (diff_upr/y_2013_upr)*100)
+
+```
+
+## Mobile macro-invertebrates LMM
+```{r year range 1992 - 2024}
+#Filter years and add a weighting in for site 
+inverts_data <- 
+  inverts_data %>%
+  mutate(count = 10^log_count) %>% # Add count column from log_cover to determine weighting for species by site
+  add_count(site_code, species_name, wt = count, name = "site_count")
+
+result_inverts <- tibble(
+  species_name = character(),
+  slope = numeric(),
+  intercept = numeric(),
+  intercept1990 = numeric(),
+  intercept1991 = numeric(),
+  p_value = numeric(),
+  ci_low_intercept = numeric(),
+  ci_high_intercept = numeric(),
+  ci_low_slope = numeric(),
+  ci_high_slope = numeric(),
+  se = numeric(),
+  sd_residuals = numeric(),
+  aic = numeric(),
+  bic = numeric(),
+  error_flag = character()  #Column to track the error flag
+) 
+
+for (i in unique(inverts_data$species_name)) {
+  
+  mod_data_inverts <- 
+    inverts_data %>% 
+    filter(species_name == i)
+  
+# Check the number of unique levels of site_code for each species_name
+  unique_levels <- n_distinct(inverts_data$site_code)  
+  
+    if (unique_levels <= 1) {
+    warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
+    next  # Skip to the next iteration
+  }
+  
+  # Fit the mixed-effects model
+  tryCatch({inverts_model <- lmerTest::lmer(log_count ~ survey_year + (1|site_code), data = mod_data_inverts, weights = site_count) 
+  
+  intercept <- lme4::fixef(inverts_model)[1] %>% as.numeric()
+  slope <- lme4::fixef(inverts_model)[2] %>% as.numeric()
+  
+  #Determine the reference year from the data = 1992
+  reference_year <- min(mod_data_inverts$survey_year)
+    
+  #Calculate intercept at year 1990 & 1991
+  intercept1990 <- intercept + slope * (1990 - reference_year)
+  intercept1991 <- intercept + slope * (1991 - reference_year)
+  
+  # Check if the model has a singular fit
+  if (isSingular(inverts_model)) {
+    error_flag <- "Singular Fit"  # Set the error flag
+  } else {
+    error_flag <- ""  # No error flag
+    # Extracting p-value
+    p_value <- summary(inverts_model)$coefficients[2, "Pr(>|t|)"]
+    
+    ci <- confint(inverts_model, method = "Wald")
+    
+    ci_low_intercept <- ci["(Intercept)", 1]
+    ci_high_intercept <- ci["(Intercept)", 2]
+    ci_low_slope <- ci["survey_year", 1]
+    ci_high_slope <- ci["survey_year", 2]
+    
+    se <- summary(inverts_model)$coefficients[2, "Std. Error"]
+    sd_residuals <- summary(inverts_model)$sigma
+    aic <- AIC(inverts_model)
+    bic <- BIC(inverts_model)
+  }
+  
+  output <- summary(object = inverts_model)
+  
+  result_inverts <- result_inverts %>% 
+    add_row(species_name = i, slope = slope, 
+            intercept = intercept, 
+            intercept1990 = intercept1990,
+            intercept1991 = intercept1991,
+            p_value = p_value,
+            ci_low_intercept = ci_low_intercept, 
+            ci_high_intercept = ci_high_intercept, 
+            ci_low_slope = ci_low_slope,
+            ci_high_slope = ci_high_slope, 
+            se = se, 
+            sd_residuals = sd_residuals,
+            aic = aic,
+            bic = bic,
+            error_flag = error_flag) %>%
+    mutate(sig = case_when(p_value <= 0.001 ~ "***",
+                           p_value <= 0.01  ~ "**",
+                           p_value <= 0.05  ~ "*",
+                           TRUE ~ "")) }, error = function(e) {
+    cat("Error occurred for species:", i, "\n")
+    cat("Error message:", conditionMessage(e), "\n")
+  })
+
+}
+
+
+#Determining % change (1992 - 2024 (2024 only available at certain sites, 2023 best estimate))
+# result_inverts <- result_inverts %>% 
+#   mutate(y_1992 = 10^(intercept+(slope*1992)), 
+#          y_2024 = 10^(intercept+(slope*2024)), 
+#          y_1992_lwr = 10^(intercept+(ci_low_slope*1992)), 
+#          y_2024_lwr = 10^(intercept+(ci_low_slope*2024)),
+#          y_1992_upr = 10^(intercept+(ci_high_slope*1992)), 
+#          y_2024_upr = 10^(intercept+(ci_high_slope*2024))
+#          ) %>% 
+#   mutate(difference = (y_2024-y_1992), 
+#          difference_lwr = y_2024_lwr-y_1992_lwr, 
+#          difference_upr = y_2024_upr-y_1992_upr) %>% 
+#   mutate(thirtyyear_change = (difference/y_1992)*100,
+#          thirtyyear_change_lwr = (difference_lwr/y_1992_lwr)*100,
+#          thirtyyear_change_upr = (difference_upr/y_1992_upr)*100)
+
+
+#Determining % change (decade change)
+result_inverts <- result_inverts %>% 
+  mutate(y_2013 = 10^(intercept+(slope*2013)), 
+         y_2023 = 10^(intercept+(slope*2023)), 
+         y_2013_lwr = 10^(intercept+(ci_low_slope*2013)), 
+         y_2023_lwr = 10^(intercept+(ci_low_slope*2023)),
+         y_2013_upr = 10^(intercept+(ci_high_slope*2013)), 
+         y_2023_upr = 10^(intercept+(ci_high_slope*2023))
+         ) %>% 
+  mutate(diff = (y_2023-y_2013), 
+         diff_lwr = y_2023_lwr-y_2013_lwr, 
+         diff_upr = y_2023_upr-y_2013_upr) %>% 
+  mutate(decade_change = (diff/y_2013)*100,
+         decade_change_lwr = (diff_lwr/y_2013_lwr)*100,
+         decade_change_upr = (diff_upr/y_2013_upr)*100)
+
+```
+
+## Coral LMM
+```{r - year range 2008 - 2022}
+#Filter years and add a weighting in for site 
+coral_data <- 
+  coral_data %>%
+  mutate(count = 10^log_cover) %>% # Add count column from log_cover to determine weighting for species by site
+  add_count(site_code, species_name, wt = count, name = "site_count")
+
+result_coral <- tibble(
+  species_name = character(),
+  slope = numeric(),
+  intercept = numeric(),
+  intercept2007 = numeric(),
+  intercept2008 = numeric(),
+  p_value = numeric(),
+  ci_low_intercept = numeric(),
+  ci_high_intercept = numeric(),
+  ci_low_slope = numeric(),
+  ci_high_slope = numeric(),
+  se = numeric(),
+  sd_residuals = numeric(),
+  aic = numeric(),
+  bic = numeric(),
+  error_flag = character()  # New column to track the error flag
+) 
+
+for (i in unique(coral_data$species_name)) {
+  
+  mod_data_coral <- coral_data %>% filter(species_name == i)
+  
+  
+  # Check the number of unique levels of site_code for each species_name
+  unique_levels <- n_distinct(coral_data$site_code)
+  
+  if (unique_levels <= 1) {
+    warning(paste("Species", i, "has only one level of site_code. Consider using a different grouping variable."))
+    next  # Skip to the next iteration
+  }
+  
+  # Fit the mixed-effects model
+  tryCatch({coral_model <- lmerTest::lmer(log_cover ~ survey_year + (1|site_code), data = mod_data_coral, weights = site_count) 
+  
+  intercept <- lme4::fixef(coral_model)[1] %>% as.numeric()
+  slope <- lme4::fixef(coral_model)[2] %>% as.numeric()
+  
+  #Determine the reference year from the data = 2008
+  reference_year <- min(mod_data_coral$survey_year)
+    
+  #Calculate intercept at year 2007 & 2008
+  intercept2007 <- intercept + slope * (2007 - reference_year)
+  intercept2008 <- intercept + slope * (2008 - reference_year)
+  
+  # Check if the model has a singular fit
+  if (isSingular(coral_model)) {
+    error_flag <- "Singular Fit"  # Set the error flag
+  } else {
+    error_flag <- ""  # No error flag
+    # Extracting p-value
+    p_value <- summary(coral_model)$coefficients[2, "Pr(>|t|)"]
+    
+    ci <- confint(coral_model, method = "Wald")
+    
+    ci_low_intercept <- ci["(Intercept)", 1]
+    ci_high_intercept <- ci["(Intercept)", 2]
+    ci_low_slope <- ci["survey_year", 1]
+    ci_high_slope <- ci["survey_year", 2]
+
+    se <- summary(coral_model)$coefficients[2, "Std. Error"]
+    sd_residuals <- summary(coral_model)$sigma
+    aic <- AIC(coral_model)
+    bic <- BIC(coral_model)
+    
+    # Extract residuals
+    residuals <- residuals(coral_model)
+      
+    
+  }
+  
+  output <- summary(object = coral_model)
+  
+  result_coral <- result_coral %>% 
+    add_row(species_name = i, slope = slope, 
+            intercept = intercept, 
+            intercept2007 = intercept2007,
+            intercept2008 = intercept2008,
+            p_value = p_value,
+            ci_low_intercept = ci_low_intercept, 
+            ci_high_intercept = ci_high_intercept, 
+            ci_low_slope = ci_low_slope,
+            ci_high_slope = ci_high_slope,
+            se = se, 
+            sd_residuals = sd_residuals,
+            aic = aic,
+            bic = bic,
+            error_flag = error_flag) %>%
+    mutate(sig = case_when(p_value <= 0.001 ~ "***",
+                           p_value <= 0.01  ~ "**",
+                           p_value <= 0.05  ~ "*",
+                           TRUE ~ ""))  
+  }, error = function(e) {
+    cat("Error occurred for species:", i, "\n")
+    cat("Error message:", conditionMessage(e), "\n")
+  })
+  
+}
+
+#Determining % change (decade change)
+result_coral <- result_coral %>% 
+  mutate(y_2012 = 10^(intercept+(slope*2012)), 
+         y_2022 = 10^(intercept+(slope*2022)), 
+         y_2012_lwr = 10^(intercept+(ci_low_slope*2012)), 
+         y_2022_lwr = 10^(intercept+(ci_low_slope*2022)),
+         y_2012_upr = 10^(intercept+(ci_high_slope*2012)), 
+         y_2022_upr = 10^(intercept+(ci_high_slope*2022))
+         ) %>% 
+  mutate(diff = (y_2022-y_2012), 
+         diff_lwr = y_2022_lwr-y_2012_lwr, 
+         diff_upr = y_2022_upr-y_2012_upr) %>% 
+  mutate(decade_change = (diff/y_2012)*100,
+         decade_change_lwr = (diff_lwr/y_2012_lwr)*100,
+         decade_change_upr = (diff_upr/y_2012_upr)*100)
+         
+
+```
+
+#Chi squared and Fisher's Exact Tests
+Pearson’s Chi-squared tests were conducted to evaluate potential associations 
+among categorical variables relevant to threatened taxa, specifically examining 
+endemism and biogeographic region (temperate vs. tropical). For each analysis, 
+contingency tables were constructed to display the frequency distributions of 
+these categorical levels, with the Chi-squared statistic calculated to test for
+statistically significant deviations from independence among categories. 
+To address situations involving small sample sizes, Fisher’s Exact Test was used 
+as a more appropriate alternative to calculate the exact probability of 
+obtaining the observed distribution under the null hypothesis, regardless of 
+contingency table size. Effect size was further quantified using Cramér's V, 
+providing an estimate of the association's magnitude where significant 
+relationships were detected.  
+
+```{r - Chi Squared Test - signficant changes}
+
+#Perform tests to understand associations between categorical variables of taxa provisionally threatened (i.e. decadal decline > 30%)
+
+###### Pearson's Chi Squared Test ################
+
+###################### Endemism versus biogeography ##########################
+
+#Endemism and biogeography
+
+# Create the contingency table
+data <- matrix(c(30, 1, 17, 34), 
+               nrow = 2, 
+               byrow = TRUE,
+               dimnames = list(
+                 Endemism = c("Endemic", "Non-endemic"),
+                 BiogeographicRegion = c("Temperate", "Tropical")
+               ))
+
+# View the contingency table
+print(data)
+
+# Perform the chi-squared test
+chi_squared_result <- chisq.test(data)
+
+# Display the results
+print(chi_squared_result)
+
+# # Install and load the necessary package
+# if (!requireNamespace("vcd", quietly = TRUE)) {
+#   install.packages("vcd")
+# }
+
+# Compute Cramér's V
+cramers_v <- assocstats(data)$cramer
+
+# Display the result
+print(cramers_v)
+
+
+
+######## Fisher's Exact Test ##############
+
+################## Taxa versus endemism ###############
+
+# Create the contingency table
+data_taxa <- matrix(c(9, 16, 6, 3, 9, 39), 
+                    nrow = 2, 
+                    byrow = TRUE,
+                    dimnames = list(
+                      Endemism = c("Endemic", "Non-endemic"),
+                      Taxa = c("Macroalgae", "Invertebrates", "Fish")
+                    ))
+
+# View the contingency table
+print(data_taxa)
+
+# Perform the chi-squared test with simulation (if expected counts are small)
+chi_squared_taxa_sim <- chisq.test(data_taxa, simulate.p.value = TRUE)
+
+# Display the chi-squared test results with simulation
+print(chi_squared_taxa_sim)
+
+# Perform Fisher's Exact Test (alternative to chi-squared test)
+fisher_test <- fisher.test(data_taxa)
+
+# Display Fisher's Exact Test results
+print(fisher_test)
+
+# Compute Cramér's V for effect size
+if (!requireNamespace("vcd", quietly = TRUE)) {
+  install.packages("vcd")
+}
+library(vcd)
+
+cramers_v_taxa <- assocstats(data_taxa)$cramer
+
+# Display Cramér's V
+print(cramers_v_taxa)
+
+```
