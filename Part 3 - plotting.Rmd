@@ -73,7 +73,7 @@ library(vcd)
 
 #Read in summarised results spreadsheet
 ```{r - read in data}
-all_time_change <- read_csv("LMM_output.csv")
+alltime_change <- read_csv("LMM_output.csv")
 ```
 
 #Plotting
@@ -104,10 +104,9 @@ endemicdecade <- alltime_change %>%
       taxon == "Macroalgae" ~ "a) Macroalgae"
     ),
     taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes")),
-    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)"))
-  ) %>%
-  # Define a binary for significance (filled vs hollow shapes)
-    sig_filled = if_else(str_detect(sig, "\\*"), "Significant", "Non-significant")
+    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)")),
+    sig_filled = factor(if_else(str_detect(sig, "\\*"), "Significant", "Non-significant"), 
+                        levels = c("Non-significant", "Significant")) # Ensure factor levels
   ) %>%
   # Include species with a decline of >= -25% in decade_change
   filter(decade_change <= -24.9, slope < 0, endemism == "endemic") %>%
@@ -117,41 +116,37 @@ endemicdecade <- alltime_change %>%
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -30, xmax = -50, fill = "yellow") +
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -50, xmax = -80, fill = "orange") +
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = "red") +
-
   # Add vertical dashed lines
   geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
-
   # Error bars with the same position nudge as the points
   geom_errorbarh(aes(xmin = decade_change_lwr, xmax = pmin(decade_change_upr, 0), height = 0.2),
                  position = position_nudge(y = -0.12)) +
-  
   # Points with the same position nudge
   geom_point(aes(shape = biogeog, fill = sig_filled), size = 4, color = "black", stroke = 1, 
              position = position_nudge(y = -0.12)) +
   # Add facets for taxa with free y scale and spacing
   ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
-
   # Customize shapes for the different biogeographies
   scale_shape_manual(values = c(
     "temperate (cool)" = 16,
     "temperate (warm)" = 17,
     "tropical" = 15
   )) +
-
-  # Customize fill for significance (clear for non-significant, black for significant)
-  scale_fill_manual(values = c("Significant" = "black", "Non-significant" = "transparent"), 
-                    labels = c("Non-significant", "Significant"), 
-                    guide = guide_legend(override.aes = list(fill = c("transparent", "black"), shape = 21))) +
-  
-# Axis labels and legend title
+  # Customize fill for significance with drop = FALSE
+  scale_fill_manual(
+    values = c("Non-significant" = "transparent", "Significant" = "black"), 
+    labels = c("Non-significant", "Significant"),
+    drop = FALSE, # Prevents dropping missing levels
+    guide = guide_legend(override.aes = list(fill = c("transparent", "black"), shape = 21))
+  ) +
+  # Axis labels and legend title
   labs(
     x = "Rate of decline over a decade",
     y = "Species Name",
     shape = "Biogeography",
     fill = "Significance"
   ) +
-  
   # Apply minimal theme and customizations
   theme_minimal() +
   theme(
@@ -162,6 +157,7 @@ endemicdecade <- alltime_change %>%
     plot.title = element_text(hjust = 0.5),
     strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
   )
+
 
 plot(endemicdecade)
 
@@ -187,9 +183,8 @@ nonendemicsdecade <- alltime_change %>%
       taxon == "Macroalgae" ~ "a) Macroalgae"
     ),
     taxon = factor(taxon, levels = c("a) Macroalgae", "b) Invertebrates", "c) Fishes")),
-    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)"))
-  ) %>%
-  # Define a binary for significance (filled vs hollow shapes)
+    biogeog = factor(biogeog, levels = c("tropical", "temperate (warm)", "temperate (cool)")),
+    # Define a binary for significance (filled vs hollow shapes)
     sig_filled = if_else(str_detect(sig, "\\*"), "Significant", "Non-significant")
   ) %>%
   # Include species with a decline of >= -25% in decade_change
@@ -200,7 +195,7 @@ nonendemicsdecade <- alltime_change %>%
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -30, xmax = -50, fill = fill_colors[2]) +
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -50, xmax = -80, fill = fill_colors[3]) +
   geom_rect(ymin = -Inf, ymax = Inf, xmin = -80, xmax = -100, fill = fill_colors[4]) +
-
+  
   # Add vertical dashed lines
   geom_vline(xintercept = c(-30, -50, -80), lty = 2) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
@@ -212,22 +207,22 @@ nonendemicsdecade <- alltime_change %>%
   # Points with the same position nudge
   geom_point(aes(shape = biogeog, fill = sig_filled), size = 4, color = "black", stroke = 1, 
              position = position_nudge(y = -0.12)) +
-
+  
   # Add facets for taxa with free y scale and spacing
   ggforce::facet_col(taxon ~ ., scales = "free_y", space = "free") +
-
+  
   # Customize shapes for the different biogeographies
   scale_shape_manual(values = c(
     "temperate (cool)" = 16,
     "temperate (warm)" = 17,
     "tropical" = 15
   )) +
-
+  
   # Customize fill for significance (clear for non-significant, black for significant)
   scale_fill_manual(values = c("Significant" = "black", "Non-significant" = "transparent"), 
                     labels = c("Non-significant", "Significant"), 
                     guide = guide_legend(override.aes = list(fill = c("transparent", "black"), shape = 21))) +
-
+  
   # Axis labels and legend title
   labs(
     x = "Rate of decline over a decade",
@@ -247,6 +242,7 @@ nonendemicsdecade <- alltime_change %>%
     strip.text = element_text(size = 11, hjust = 0, vjust = 1)  # Facet label style
   )
 
+
 plot(nonendemicsdecade)
 
 #Save plot of non-endemics
@@ -262,6 +258,16 @@ dev.off()  # Close the device
 #desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
 
 #ENDEMICS
+all_species_endemic <- alltime_change %>%
+    filter(endemism == "endemic") %>%
+ mutate(provisional_status = case_when(
+    decade_change >= -14.99 ~ "Least Concern",
+    decade_change >= -29.99 & decade_change < 15 ~ "Near Threatened",
+    decade_change >= -49.99 & decade_change < -30 ~ "Vulnerable",
+    decade_change >= -79.99 & decade_change < -50 ~ "Endangered",
+    decade_change >= -100 & decade_change < -80 ~ "Critically Endangered"
+  )) 
+
 all_species_endemic <- all_species_endemic  %>%
   count(taxon, IUCN, provisional_status, species_name) %>%
   mutate(provisional_status = factor(provisional_status, levels = c("Critically Endangered", "Endangered", "Vulnerable", "Near Threatened", "Least Concern", "Lower Risk/conservation dependent"))) %>%
@@ -303,6 +309,17 @@ dev.off()  # Close the device
 ################################ NON-ENDEMICS #######################################
 
 #NON-ENDEMICS
+
+all_species_non_endemic <- alltime_change %>%
+    filter(endemism == "non-endemic") %>% 
+  mutate(provisional_status = case_when(
+    decade_change >= -14.99 ~ "Least Concern",
+    decade_change >= -29.99 & decade_change < 15 ~ "Near Threatened",
+    decade_change >= -49.99 & decade_change < -30 ~ "Vulnerable",
+    decade_change >= -79.99 & decade_change < -50 ~ "Endangered",
+    decade_change >= -100 & decade_change < -80 ~ "Critically Endangered"
+  )) 
+
 #Specify order of facet panels in plots
 #desired_order <- c("Macroalgae", "Coral", "Invertebrate", "Vertebrate")
 

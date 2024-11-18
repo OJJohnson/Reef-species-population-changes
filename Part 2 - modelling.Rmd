@@ -71,6 +71,18 @@ library(vcd)
 `%!in%` <- Negate(`%in%`)
 ```
 
+# Data import
+```{r - read in all tidied csv files}
+algae_data <- read_csv("algae_data_2024.csv", show_col_types = FALSE)
+
+fish_data <- read_csv("fish_data_2024.csv", show_col_types = FALSE)
+
+inverts_data <- read_csv("inverts_data_2024.csv", show_col_types = FALSE)
+
+coral_data <- read_csv("coral_data_2024.csv", show_col_types = FALSE)
+
+```
+
 # Linear mixed effects models
 Below, I will perform a series of linear mixed-effects models on the
 data above that has been cleaned available in previous script. Each major group 
